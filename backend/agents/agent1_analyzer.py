@@ -30,6 +30,7 @@ class AnalysisResult(BaseModel):
     intensity: str                   # 香气强度建议（淡/中/浓）
     scent_keywords: list[str]        # 气味关键词列表（如：["木质", "花香", "麝香"]）
     occasion_type: str               # 场合类型
+    recommended_family: str          # 推荐香基家族（6 选 1）
     raw_analysis: str                # Claude 原始分析文本
 
 
@@ -95,22 +96,40 @@ class AnalyzerAgent:
 - intensity: 香气强度（淡/中/浓）
 - scent_keywords: 气味关键词数组（3-5个，如木质、花香、麝香、柑橘、海洋等）
 - occasion_type: 场合类型
+- recommended_family: 最匹配的香基家族，必须从以下 6 个中选一：柑橘清新、绿意水生、花香粉感、木质琥珀、甜感美食、树脂辛香
 - raw_analysis: 100字以内的简短分析说明
 
-只返回 JSON，不要其他内容。"""
+家族选择提示：
+  柑橘清新：明亮、干净、古龙、柠檬茶感
+  绿意水生：叶片、海风、水雾、绿茶、清冷
+  花香粉感：茉莉、铃兰、紫罗兰、玫瑰、柔粉
+  木质琥珀：雪松、广藿、琥珀、皮肤感、现代木质
+  甜感美食：香草、焦糖、桃奶、覆盆子、棉花糖
+  树脂辛香：安息香、秘鲁香脂、丁香、烟熏皮革、东方调
+
+只返回 JSON，不要其他内容，不要加 markdown 代码围栏。"""
 
     def _build_content(self, prompt: str, image_path: Optional[str]) -> list:
         """构建消息内容，支持图片输入"""
         content = [{"type": "text", "text": prompt}]
 
         if image_path:
+            ext = image_path.rsplit(".", 1)[-1].lower() if "." in image_path else "jpeg"
+            media_type = {
+                "jpg": "image/jpeg",
+                "jpeg": "image/jpeg",
+                "png": "image/png",
+                "webp": "image/webp",
+                "gif": "image/gif",
+            }.get(ext, "image/jpeg")
+
             with open(image_path, "rb") as f:
                 image_data = base64.standard_b64encode(f.read()).decode("utf-8")
             content.insert(0, {
                 "type": "image",
                 "source": {
                     "type": "base64",
-                    "media_type": "image/jpeg",
+                    "media_type": media_type,
                     "data": image_data,
                 },
             })
@@ -120,14 +139,28 @@ class AnalyzerAgent:
     def _parse_response(self, raw_text: str, occasion: str) -> AnalysisResult:
         """解析 Claude 返回的 JSON 结果"""
         import json
+        import re
+
+        # 去除 markdown 代码围栏（Claude 偶尔会加）
+        cleaned = raw_text.strip()
+        fence = re.match(r"^```(?:json)?\s*(.*?)\s*```$", cleaned, re.DOTALL)
+        if fence:
+            cleaned = fence.group(1)
+
+        valid_families = {"柑橘清新", "绿意水生", "花香粉感", "木质琥珀", "甜感美食", "树脂辛香"}
+
         try:
-            data = json.loads(raw_text)
+            data = json.loads(cleaned)
+            family = data.get("recommended_family", "柑橘清新")
+            if family not in valid_families:
+                family = "柑橘清新"
             return AnalysisResult(
                 mood=data.get("mood", "清新"),
                 season_fit=data.get("season_fit", "春"),
                 intensity=data.get("intensity", "中"),
                 scent_keywords=data.get("scent_keywords", []),
                 occasion_type=data.get("occasion_type", occasion),
+                recommended_family=family,
                 raw_analysis=data.get("raw_analysis", ""),
             )
         except json.JSONDecodeError:
@@ -138,5 +171,6 @@ class AnalyzerAgent:
                 intensity="中",
                 scent_keywords=["花香"],
                 occasion_type=occasion,
+                recommended_family="柑橘清新",
                 raw_analysis=raw_text,
             )

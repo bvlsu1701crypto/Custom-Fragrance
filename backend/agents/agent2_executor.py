@@ -1,77 +1,75 @@
 """
-Agent 2: 执行器智能体 (Executor Agent)
+Agent 2: 执行器智能体 (Executor Agent) — 香基推荐模式
 
 职责：
-  - 接收 Agent 1 输出的结构化香水需求分析报告
-  - 查询数据库，匹配合适的香水原料/配方
-  - 生成香水调配方案（包括原料比例、调配说明）
-  - 生成面向用户的自然语言推荐结果
+  - 接收 Agent 1 输出的分析报告 + 候选香基列表（含配方明细）
+  - 从候选香基中选出最匹配的 1-2 个推荐给用户
+  - 生成自然语言的推荐故事、使用建议、个性化微调建议
 
 输入：
   - analysis_result: AnalysisResult 对象（来自 Agent 1）
-  - available_ingredients: 可用原料列表（来自数据库）
+  - candidate_bases: 候选香基列表（来自 db_manager.query_bases）
 
 输出：
-  - PerfumeRecommendation 对象，包含配方和推荐说明
+  - PerfumeRecommendation 对象，含首推香基 + 可选备选 + 个性化建议
 """
 
+import json
+import re
 import anthropic
 from pydantic import BaseModel
 from typing import Optional
 from agents.agent1_analyzer import AnalysisResult
 
 
-class Ingredient(BaseModel):
-    """香水原料数据模型"""
-    name: str               # 原料名称
-    name_cn: str            # 中文名称
-    category: str           # 分类（前调/中调/后调）
-    scent_type: str         # 气味类型
-    intensity_level: int    # 强度等级 (1-5)
-    ratio: float            # 建议比例 (0.0-1.0)
+class BaseIngredient(BaseModel):
+    """香基中的单个原料条目（用于展示）"""
+    ingredient: str
+    ingredient_id: int
+    parts: int
+    role: str
 
 
-class PerfumeFormula(BaseModel):
-    """香水配方数据模型"""
-    name: str                       # 配方名称
-    description: str                # 配方描述
-    top_notes: list[Ingredient]     # 前调原料
-    middle_notes: list[Ingredient]  # 中调原料
-    base_notes: list[Ingredient]    # 后调原料
-    total_volume_ml: float          # 建议总量(ml)
+class BaseRecommendation(BaseModel):
+    """单个香基推荐"""
+    base_id: str                    # B01-B30
+    base_name: str
+    family: str
+    style: str
+    ingredients: list[BaseIngredient]   # 配方明细
+    high_impact_notes: Optional[str] = None
+    test_suggestion: Optional[str] = None
+    story: str                      # 推荐理由 / 故事
+    usage_tips: str                 # 使用建议
+    matching_score: float           # 0-100
 
 
 class PerfumeRecommendation(BaseModel):
-    """最终推荐结果数据模型"""
-    formula: PerfumeFormula         # 具体配方
-    story: str                      # 香水故事/推荐语
-    usage_tips: str                 # 使用建议
-    matching_score: float           # 匹配度评分 (0-100)
+    """最终推荐结果"""
+    primary: BaseRecommendation
+    alternative: Optional[BaseRecommendation] = None
+    personalization_tips: str       # 个性化微调建议
 
 
 class ExecutorAgent:
-    """
-    执行器智能体
-    负责根据分析结果生成具体的香水配方和推荐方案
-    """
+    """执行器：从候选香基中选出最匹配的推荐"""
 
-    def __init__(self, api_key: str):
+    def __init__(self, api_key: str, model: str = "claude-opus-4-6"):
         self.client = anthropic.Anthropic(api_key=api_key)
-        self.model = "claude-opus-4-6"
+        self.model = model
 
     def execute(
         self,
         analysis_result: AnalysisResult,
-        available_ingredients: list[dict],
+        candidate_bases: list[dict],
     ) -> PerfumeRecommendation:
-        """
-        主执行方法
-        根据分析结果从可用原料中选配香水方案
-        """
-        # 构建执行提示词
-        prompt = self._build_prompt(analysis_result, available_ingredients)
+        """从候选香基中挑选并生成推荐"""
 
-        # 调用 Claude API
+        if not candidate_bases:
+            return self._fallback_recommendation(analysis_result, candidate_bases)
+
+        prompt = self._build_prompt(analysis_result, candidate_bases)
+
         response = self.client.messages.create(
             model=self.model,
             max_tokens=2048,
@@ -79,22 +77,31 @@ class ExecutorAgent:
         )
 
         raw_text = response.content[0].text
-
-        # 解析并构建推荐结果
-        return self._parse_response(raw_text, available_ingredients)
+        return self._parse_response(raw_text, analysis_result, candidate_bases)
 
     def _build_prompt(
         self,
         analysis: AnalysisResult,
-        ingredients: list[dict],
+        bases: list[dict],
     ) -> str:
-        """构建发送给 Claude 的执行提示词"""
-        ingredients_str = "\n".join([
-            f"- {item['name_cn']}({item['name']}): {item['category']}，气味类型:{item['scent_type']}，强度:{item['intensity_level']}/5"
-            for item in ingredients[:30]  # 最多传入30种原料避免超出 token
-        ])
+        """构建推荐 prompt"""
 
-        return f"""你是一位专业的香水调香师。请根据以下分析报告和可用原料，设计一款香水配方。
+        # 最多传 8 个候选香基给 Claude，避免 prompt 太长
+        sample = bases[:8]
+        bases_str_parts = []
+        for b in sample:
+            detail_lines = [
+                f"    - {d['ingredient']} × {d['parts']} 份 ({d['role']})"
+                for d in b.get("details", [])
+            ]
+            bases_str_parts.append(
+                f"【{b['id']} {b['name']}】家族: {b['family']}，风格: {b['style']}\n"
+                + "  配方明细:\n"
+                + "\n".join(detail_lines)
+            )
+        bases_str = "\n\n".join(bases_str_parts)
+
+        return f"""你是一位专业调香师。请根据用户需求，从下列候选香基中选出最匹配的 1 个作为首推，再选 1 个作为备选（可选）。
 
 【用户需求分析】
 - 情绪倾向：{analysis.mood}
@@ -102,71 +109,144 @@ class ExecutorAgent:
 - 香气强度：{analysis.intensity}
 - 气味关键词：{', '.join(analysis.scent_keywords)}
 - 使用场合：{analysis.occasion_type}
+- 推荐家族：{analysis.recommended_family}
 - 分析说明：{analysis.raw_analysis}
 
-【可用原料库】
-{ingredients_str}
+【候选香基库】
+{bases_str}
 
-请以 JSON 格式返回配方方案，结构如下：
+请以 JSON 格式返回推荐结果，结构如下：
 {{
-  "formula": {{
-    "name": "配方名称",
-    "description": "配方描述",
-    "top_notes": [{{"name": "原料英文名", "name_cn": "中文名", "category": "前调", "scent_type": "气味类型", "intensity_level": 3, "ratio": 0.3}}],
-    "middle_notes": [...],
-    "base_notes": [...],
-    "total_volume_ml": 10
-  }},
-  "story": "这款香水的故事和推荐语（100字以内）",
-  "usage_tips": "使用建议（50字以内）",
-  "matching_score": 85
+  "primary_base_id": "B01",
+  "primary_story": "100字以内的推荐故事，把用户需求与这款香基的调性连接起来",
+  "primary_usage_tips": "50字以内的使用建议",
+  "primary_matching_score": 88,
+  "alternative_base_id": "B02 或 null",
+  "alternative_story": "100字以内（如有备选）",
+  "alternative_usage_tips": "50字以内（如有备选）",
+  "alternative_matching_score": 80,
+  "personalization_tips": "150字以内的个性化微调建议，例如建议在此香基基础上加入某种原料"
 }}
 
-只从可用原料库中选取，只返回 JSON。"""
+必须从候选列表中选择，只返回 JSON，不要加 markdown 代码围栏。"""
 
     def _parse_response(
         self,
         raw_text: str,
-        available_ingredients: list[dict],
+        analysis: AnalysisResult,
+        candidate_bases: list[dict],
     ) -> PerfumeRecommendation:
-        """解析 Claude 返回的配方 JSON"""
-        import json
+        """解析 Claude 返回的推荐 JSON，填充完整的香基数据"""
+
+        cleaned = raw_text.strip()
+        fence = re.match(r"^```(?:json)?\s*(.*?)\s*```$", cleaned, re.DOTALL)
+        if fence:
+            cleaned = fence.group(1)
 
         try:
-            data = json.loads(raw_text)
-            formula_data = data.get("formula", {})
+            data = json.loads(cleaned)
+        except json.JSONDecodeError:
+            return self._fallback_recommendation(analysis, candidate_bases)
 
-            def parse_ingredients(items: list) -> list[Ingredient]:
-                return [Ingredient(**item) for item in items]
+        by_id = {b["id"]: b for b in candidate_bases}
 
-            formula = PerfumeFormula(
-                name=formula_data.get("name", "定制香水"),
-                description=formula_data.get("description", ""),
-                top_notes=parse_ingredients(formula_data.get("top_notes", [])),
-                middle_notes=parse_ingredients(formula_data.get("middle_notes", [])),
-                base_notes=parse_ingredients(formula_data.get("base_notes", [])),
-                total_volume_ml=formula_data.get("total_volume_ml", 10.0),
+        primary_id = data.get("primary_base_id")
+        primary_base = by_id.get(primary_id) or candidate_bases[0]
+        primary = self._build_base_recommendation(
+            primary_base,
+            story=data.get("primary_story", ""),
+            usage_tips=data.get("primary_usage_tips", ""),
+            score=float(data.get("primary_matching_score", 80)),
+        )
+
+        alternative = None
+        alt_id = data.get("alternative_base_id")
+        if alt_id and alt_id in by_id and alt_id != primary.base_id:
+            alternative = self._build_base_recommendation(
+                by_id[alt_id],
+                story=data.get("alternative_story", ""),
+                usage_tips=data.get("alternative_usage_tips", ""),
+                score=float(data.get("alternative_matching_score", 70)),
             )
 
+        return PerfumeRecommendation(
+            primary=primary,
+            alternative=alternative,
+            personalization_tips=data.get("personalization_tips", ""),
+        )
+
+    def _build_base_recommendation(
+        self,
+        base: dict,
+        story: str,
+        usage_tips: str,
+        score: float,
+    ) -> BaseRecommendation:
+        """根据 DB 中的香基 dict 构造 BaseRecommendation"""
+        ingredients = [
+            BaseIngredient(
+                ingredient=d["ingredient"],
+                ingredient_id=int(d["ingredient_id"]),
+                parts=int(d["parts"]),
+                role=str(d["role"]),
+            )
+            for d in base.get("details", [])
+        ]
+        return BaseRecommendation(
+            base_id=base["id"],
+            base_name=base["name"],
+            family=base["family"],
+            style=base["style"],
+            ingredients=ingredients,
+            high_impact_notes=_none_if_na(base.get("high_impact_notes")),
+            test_suggestion=_none_if_na(base.get("test_suggestion")),
+            story=story,
+            usage_tips=usage_tips,
+            matching_score=score,
+        )
+
+    def _fallback_recommendation(
+        self,
+        analysis: AnalysisResult,
+        candidate_bases: list[dict],
+    ) -> PerfumeRecommendation:
+        """解析失败时的兜底：直接选第一个候选"""
+        if not candidate_bases:
+            # 极端情况：DB 为空，返回空推荐
+            empty = BaseRecommendation(
+                base_id="",
+                base_name="暂无匹配香基",
+                family=analysis.recommended_family,
+                style="",
+                ingredients=[],
+                story="数据库中暂无匹配的香基，请稍后重试",
+                usage_tips="",
+                matching_score=0.0,
+            )
             return PerfumeRecommendation(
-                formula=formula,
-                story=data.get("story", ""),
-                usage_tips=data.get("usage_tips", ""),
-                matching_score=float(data.get("matching_score", 80)),
+                primary=empty,
+                alternative=None,
+                personalization_tips="",
             )
 
-        except (json.JSONDecodeError, Exception) as e:
-            # 解析失败时返回默认配方
-            return PerfumeRecommendation(
-                formula=PerfumeFormula(
-                    name="清新定制香",
-                    description="根据您的偏好调配的个性香水",
-                    top_notes=[],
-                    middle_notes=[],
-                    base_notes=[],
-                    total_volume_ml=10.0,
-                ),
-                story="专为您定制的独特香气",
-                usage_tips="喷于手腕和颈部",
-                matching_score=75.0,
-            )
+        primary = self._build_base_recommendation(
+            candidate_bases[0],
+            story=f"这款 {candidate_bases[0]['name']} 符合您的 {analysis.recommended_family} 偏好",
+            usage_tips="喷于手腕和颈部内侧",
+            score=80.0,
+        )
+        return PerfumeRecommendation(
+            primary=primary,
+            alternative=None,
+            personalization_tips="可根据个人喜好微调原料比例",
+        )
+
+
+def _none_if_na(value) -> Optional[str]:
+    """处理 pandas NaN/None 转字符串的问题"""
+    if value is None:
+        return None
+    s = str(value).strip()
+    if not s or s.lower() == "nan":
+        return None
+    return s

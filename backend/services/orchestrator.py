@@ -97,17 +97,16 @@ class Orchestrator:
                 occasion=request.occasion,
             )
 
-            # Step 4: 从数据库查询匹配原料
-            available_ingredients = self.db_manager.query_ingredients(
-                scent_keywords=analysis.scent_keywords,
-                season=analysis.season_fit,
-                intensity=analysis.intensity,
+            # Step 4: 从数据库查询匹配的香基（按家族精确匹配）
+            candidate_bases = self.db_manager.query_bases(
+                family=analysis.recommended_family,
+                limit=8,
             )
 
-            # Step 5: Agent 2 生成配方和推荐
+            # Step 5: Agent 2 从候选香基中选出推荐
             recommendation: PerfumeRecommendation = self.executor.execute(
                 analysis_result=analysis,
-                available_ingredients=available_ingredients,
+                candidate_bases=candidate_bases,
             )
 
             return PerfumeGenerationResult(

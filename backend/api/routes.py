@@ -25,6 +25,7 @@ from api.models import (
     GenerateRequest,
     GenerateResponse,
     IngredientsResponse,
+    BasesResponse,
     HealthResponse,
 )
 from services.orchestrator import Orchestrator, PerfumeGenerationRequest
@@ -95,13 +96,36 @@ async def generate_perfume(
 @router.get("/ingredients", response_model=IngredientsResponse)
 async def get_ingredients(settings=Depends(get_settings)):
     """
-    获取全部可用原料列表
-    前端可用于展示原料库或允许用户手动选择原料
+    获取全部可用原料列表（38 种）
     """
     from database.db_manager import DatabaseManager
     db = DatabaseManager(db_path=settings.DATABASE_PATH)
     ingredients = db.get_all_ingredients()
     return IngredientsResponse(ingredients=ingredients, total=len(ingredients))
+
+
+@router.get("/bases", response_model=BasesResponse)
+async def get_bases(settings=Depends(get_settings)):
+    """
+    获取全部 30 个香基概览
+    """
+    from database.db_manager import DatabaseManager
+    db = DatabaseManager(db_path=settings.DATABASE_PATH)
+    bases = db.get_all_bases()
+    return BasesResponse(bases=bases, total=len(bases))
+
+
+@router.get("/bases/{base_id}")
+async def get_base_detail(base_id: str, settings=Depends(get_settings)):
+    """
+    获取单个香基的完整信息 + 配方明细
+    """
+    from database.db_manager import DatabaseManager
+    db = DatabaseManager(db_path=settings.DATABASE_PATH)
+    base = db.get_base_with_details(base_id)
+    if base is None:
+        raise HTTPException(status_code=404, detail=f"香基 {base_id} 不存在")
+    return base
 
 
 @router.get("/history")
