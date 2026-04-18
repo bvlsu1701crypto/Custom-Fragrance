@@ -120,7 +120,7 @@ class Agent2Executor:
 
     # ── 公开接口 ────────────────────────────────────────────────
 
-    def execute(self, agent1_output: Agent1Output) -> FinalOutput:
+    def execute(self, agent1_output: Agent1Output, language: str = "zh") -> FinalOutput:
         """
         主执行方法
 
@@ -132,9 +132,9 @@ class Agent2Executor:
         env     = agent1_output.environmental_context
 
         logger.info(
-            "[Agent2] 开始执行 | 香调=%s 扩散=%s 预算=%s 留香=%s",
+            "[Agent2] 开始执行 | 香调=%s 扩散=%s 预算=%s 留香=%s 语言=%s",
             profile.scent_families, profile.sillage,
-            profile.budget_level, profile.longevity,
+            profile.budget_level, profile.longevity, language,
         )
 
         # Step 1：按层位 + 家族关键词筛选精油
@@ -155,6 +155,7 @@ class Agent2Executor:
         description, rationale = self._generate_description(
             agent1_output, top_oils, mid_oils, base_oils,
             top_notes, mid_notes, base_notes, specs,
+            language=language,
         )
 
         output = FinalOutput(
@@ -368,6 +369,7 @@ class Agent2Executor:
         mid_notes: list[FormulaNote],
         base_notes: list[FormulaNote],
         specs: dict[str, Any],
+        language: str = "zh",
     ) -> tuple[str, str]:
         """
         将真实精油参数（扩散距离/留香时长）和 selection_basis 注入 prompt，
@@ -398,7 +400,14 @@ class Agent2Executor:
         raw_names = [n.name for n in all_notes]
         naming_lines = "\n".join(f"- {n}" for n in raw_names) or "- 无"
 
-        prompt = f"""你是一位诗意的香水文案师，同时也是专业调香顾问。
+        lang_instruction = (
+            "You are a poetic perfume copywriter and professional fragrance consultant. "
+            "You MUST respond entirely in English. All text fields in the JSON must be in English."
+            if language == "en"
+            else "你是一位诗意的香水文案师，同时也是专业调香顾问。"
+        )
+
+        prompt = f"""{lang_instruction}
 
 ## 已选定的香油配方
 
@@ -478,11 +487,18 @@ class Agent2Executor:
                         note.name = display.strip()
         except Exception as exc:
             logger.warning("[Agent2] DeepSeek 文案生成失败：%s，使用兜底文案", exc)
-            top_names  = "、".join(n.name for n in top_notes)  or "无"
-            mid_names  = "、".join(n.name for n in mid_notes)  or "无"
-            base_names = "、".join(n.name for n in base_notes) or "无"
-            description = f"以{top_names}为前调，{mid_names}为核心，{base_names}收尾的专属香水。"
-            rationale   = f"针对{env.occasion}场合，结合{env.season}季{env.temperature_range}天气精心调配。"
+            top_names  = ", ".join(n.name for n in top_notes)  or "none"
+            mid_names  = ", ".join(n.name for n in mid_notes)  or "none"
+            base_names = ", ".join(n.name for n in base_notes) or "none"
+            if language == "en":
+                description = f"A bespoke fragrance opening with {top_names}, blooming into {mid_names}, and settling into {base_names}."
+                rationale   = f"Crafted for {env.occasion}, tailored to {env.season} season and {env.temperature_range} conditions."
+            else:
+                top_names  = "、".join(n.name for n in top_notes)  or "无"
+                mid_names  = "、".join(n.name for n in mid_notes)  or "无"
+                base_names = "、".join(n.name for n in base_notes) or "无"
+                description = f"以{top_names}为前调，{mid_names}为核心，{base_names}收尾的专属香水。"
+                rationale   = f"针对{env.occasion}场合，结合{env.season}季{env.temperature_range}天气精心调配。"
 
         return description, rationale
 

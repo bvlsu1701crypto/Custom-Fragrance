@@ -87,7 +87,7 @@ async def generate_perfume(request: Agent1Input):
         analysis = analyzer.analyze(request)
 
         executor = Agent2Executor()
-        result   = executor.execute(analysis)
+        result   = executor.execute(analysis, language=request.language)
 
         return result
 

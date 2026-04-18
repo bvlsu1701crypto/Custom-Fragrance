@@ -142,6 +142,10 @@ class Agent1Input(BaseModel):
         default="",
         description="用户自由输入的文字描述，优先级最高，可为空",
     )
+    language: Literal["zh", "en"] = Field(
+        default="zh",
+        description="输出语言：zh=中文，en=英文",
+    )
     watch_data: AppleWatchData = Field(
         description="Apple Watch 采集的体温、位置、心率、活动强度"
     )
