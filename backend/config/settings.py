@@ -5,7 +5,7 @@
 
 使用方式：
   from config.settings import settings
-  print(settings.ANTHROPIC_API_KEY)
+  print(settings.ZHIPU_API_KEY)
 """
 
 from pydantic import field_validator
@@ -18,8 +18,8 @@ class Settings(BaseSettings):
     字段优先从环境变量读取，其次使用默认值
     """
 
-    # ── 必需：Anthropic API Key ────────────────
-    ANTHROPIC_API_KEY: str
+    # ── 必需：智谱 AI API Key ──────────────────
+    ZHIPU_API_KEY: str
 
     # ── 数据库配置 ─────────────────────────────
     DATABASE_PATH: str = "database/data"
@@ -33,12 +33,12 @@ class Settings(BaseSettings):
     # 例：ALLOWED_ORIGINS=http://localhost:3000,https://*.vercel.app
     ALLOWED_ORIGINS: list[str] = ["http://localhost:3000"]
 
-    @field_validator("ANTHROPIC_API_KEY")
+    @field_validator("ZHIPU_API_KEY")
     @classmethod
     def api_key_must_not_be_empty(cls, v: str) -> str:
         if not v or not v.strip():
             raise ValueError(
-                "ANTHROPIC_API_KEY 不能为空，请在 .env 文件中配置有效的 API Key"
+                "ZHIPU_API_KEY 不能为空，请在 .env 文件中配置有效的 API Key"
             )
         return v.strip()
 
