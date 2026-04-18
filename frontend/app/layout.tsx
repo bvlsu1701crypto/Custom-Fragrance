@@ -1,6 +1,7 @@
 import type { Metadata } from 'next'
 import { DM_Sans, Playfair_Display } from 'next/font/google'
 import { Analytics } from '@vercel/analytics/next'
+import { AmbientMusicPlayer } from '@/components/ambient-music-player'
 import { LanguageProvider } from '@/lib/language-context'
 import './globals.css'
 
@@ -40,6 +41,7 @@ export default function RootLayout({
       <body className={`${_dmSans.variable} ${_playfair.variable} font-sans antialiased min-h-screen`}>
         <LanguageProvider>
           {children}
+          <AmbientMusicPlayer />
         </LanguageProvider>
         {process.env.NODE_ENV === 'production' && <Analytics />}
       </body>
