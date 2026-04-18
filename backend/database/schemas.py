@@ -269,6 +269,17 @@ class PerfumeFormula(BaseModel):
     )
 
 
+class SimilarPerfume(BaseModel):
+    """市售香水推荐"""
+
+    brand: str = Field(description="品牌名称，如 Chanel")
+    name: str = Field(description="香水全名，如 No.5 Eau de Parfum")
+    top_notes: str = Field(description="前调成分，逗号分隔")
+    middle_notes: str = Field(description="中调成分，逗号分隔")
+    base_notes: str = Field(description="后调成分，逗号分隔")
+    reason: str = Field(description="与用户配方相似的原因（30字以内）")
+
+
 class FinalOutput(BaseModel):
     """Agent2 的最终输出，直接返回给前端"""
 
@@ -291,4 +302,8 @@ class FinalOutput(BaseModel):
         gt=0,
         le=40,
         description="香精浓度（%）：EDT≈10%，EDP≈15%，香精≈25%"
+    )
+    similar_perfume: Optional[SimilarPerfume] = Field(
+        default=None,
+        description="最相似的一款市售香水推荐"
     )

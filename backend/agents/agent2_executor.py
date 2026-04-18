@@ -24,6 +24,7 @@ from database.schemas import (
     FinalOutput,
     FormulaNote,
     PerfumeFormula,
+    SimilarPerfume,
 )
 
 logger = logging.getLogger(__name__)
@@ -152,7 +153,7 @@ class Agent2Executor:
         specs = self._calculate_specifications(profile, env)
 
         # Step 4：调用 GLM 生成文案（把真实精油参数注入 prompt）
-        description, rationale = self._generate_description(
+        description, rationale, similar = self._generate_description(
             agent1_output, top_oils, mid_oils, base_oils,
             top_notes, mid_notes, base_notes, specs,
             language=language,
@@ -169,6 +170,7 @@ class Agent2Executor:
             volume_ml=specs["volume_ml"],
             estimated_longevity_hours=specs["longevity_hours"],
             concentration_percentage=specs["concentration_pct"],
+            similar_perfume=similar,
         )
 
         logger.info(
@@ -462,8 +464,14 @@ class Agent2Executor:
    - 原料列表：
 {naming_lines}
 
+4. **similar_perfume**（最相似的一款市售香水）
+   - 从你的知识库中找一款与上述前中后调**成分重叠最多**的真实品牌香水
+   - 必须是真实存在的商业香水
+   - 字段：brand（品牌）、name（香水全名）、top_notes（前调，逗号分隔）、middle_notes（中调，逗号分隔）、base_notes（后调，逗号分隔）、reason（相似原因，30字以内）
+   - 语言与 scent_description 保持一致
+
 **只返回 JSON，格式：**
-{{"scent_description": "...", "selection_rationale": "...", "common_names": {{"原料名1": "大众名1", "原料名2": "大众名2"}}}}"""
+{{"scent_description": "...", "selection_rationale": "...", "common_names": {{"原料名1": "大众名1"}}, "similar_perfume": {{"brand": "...", "name": "...", "top_notes": "...", "middle_notes": "...", "base_notes": "...", "reason": "..."}}}}"""
 
         try:
             resp = self.llm.chat.completions.create(
@@ -485,6 +493,20 @@ class Agent2Executor:
                     display = common.get(note.name)
                     if display and isinstance(display, str) and display.strip():
                         note.name = display.strip()
+
+            # 解析相似香水推荐
+            sp_data = data.get("similar_perfume")
+            if isinstance(sp_data, dict) and sp_data.get("brand"):
+                similar = SimilarPerfume(
+                    brand=sp_data.get("brand", ""),
+                    name=sp_data.get("name", ""),
+                    top_notes=sp_data.get("top_notes", ""),
+                    middle_notes=sp_data.get("middle_notes", ""),
+                    base_notes=sp_data.get("base_notes", ""),
+                    reason=sp_data.get("reason", ""),
+                )
+            else:
+                similar = None
         except Exception as exc:
             logger.warning("[Agent2] DeepSeek 文案生成失败：%s，使用兜底文案", exc)
             top_names  = ", ".join(n.name for n in top_notes)  or "none"
@@ -499,8 +521,9 @@ class Agent2Executor:
                 base_names = "、".join(n.name for n in base_notes) or "无"
                 description = f"以{top_names}为前调，{mid_names}为核心，{base_names}收尾的专属香水。"
                 rationale   = f"针对{env.occasion}场合，结合{env.season}季{env.temperature_range}天气精心调配。"
+            similar = None
 
-        return description, rationale
+        return description, rationale, similar
 
     def _build_selection_basis(
         self,
