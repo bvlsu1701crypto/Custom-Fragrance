@@ -550,6 +550,12 @@ export default function Home() {
 
   const STEPS = language === "zh" ? STEPS_ZH : STEPS_EN
 
+  const scrollToTop = () => {
+    requestAnimationFrame(() => {
+      window.scrollTo({ top: 0, behavior: "smooth" })
+    })
+  }
+
   const handleNext = async () => {
     if (currentStep === 2) {
       setIsGenerating(true)
@@ -558,8 +564,10 @@ export default function Home() {
       setResult(recommendation)
       setIsGenerating(false)
       setCurrentStep(3)
+      scrollToTop()
     } else {
       setCurrentStep((prev) => Math.min(prev + 1, STEPS.length - 1))
+      scrollToTop()
     }
   }
 
