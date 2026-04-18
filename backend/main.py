@@ -43,7 +43,7 @@ LOGGING_CONFIG = {
         "uvicorn":        {"level": "INFO",    "propagate": True},
         "uvicorn.access": {"level": "WARNING", "propagate": True},
         "httpx":          {"level": "WARNING", "propagate": True},
-        "zhipuai":        {"level": "WARNING", "propagate": True},
+        "openai":         {"level": "WARNING", "propagate": True},
     },
 }
 

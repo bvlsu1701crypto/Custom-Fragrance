@@ -3,7 +3,7 @@ Agent 1: 分析器智能体 (Analyzer Agent)
 
 职责：
   - 接收 Agent1Input（Apple Watch 生理数据 + 问卷回答 + 天气）
-  - 构建详细 prompt，调用智谱 AI GLM-5.1
+  - 构建详细 prompt，调用 DeepSeek Chat（OpenAI 兼容协议）
   - 综合生理状态、环境条件、用户偏好，分析出最终偏好画像
   - 返回 Agent1Output（PreferenceProfile + EnvironmentalContext + 关键词）
 """
@@ -15,7 +15,7 @@ import logging
 import re
 from typing import Any
 
-from zhipuai import ZhipuAI
+from openai import OpenAI
 
 from config.settings import settings
 from database.schemas import (
@@ -59,13 +59,16 @@ _CONCENTRATION_MAP = {
 class Agent1Analyzer:
     """
     分析器智能体
-    综合问卷答案和 Apple Watch 生理数据，通过 GLM-5.1 生成偏好画像
+    综合问卷答案和 Apple Watch 生理数据，通过 DeepSeek Chat 生成偏好画像
     """
 
-    MODEL = "GLM-5.1"  # 智谱 AI 模型名称
+    MODEL = "deepseek-chat"
 
     def __init__(self) -> None:
-        self.client = ZhipuAI(api_key=settings.ZHIPU_API_KEY)
+        self.client = OpenAI(
+            api_key=settings.DEEPSEEK_API_KEY,
+            base_url=settings.DEEPSEEK_BASE_URL,
+        )
 
     # ── 公开接口 ────────────────────────────────────────────────
 
@@ -92,7 +95,7 @@ class Agent1Analyzer:
         activity_note, act_offset = _ACTIVITY_RULES[agent_input.watch_data.activity_level]
         sillage_offset = temp_offset + act_offset
 
-        # Step 2：调用 GLM-5.1 进行语义分析
+        # Step 2：调用 DeepSeek 进行语义分析
         prompt   = self._build_prompt(agent_input, temp_note, activity_note)
         raw_json = self._call_llm(prompt)
 
@@ -199,7 +202,7 @@ class Agent1Analyzer:
 
     def _call_llm(self, prompt: str) -> dict[str, Any]:
         """
-        调用智谱 AI GLM-5.1，返回解析后的 JSON dict
+        调用 DeepSeek Chat，返回解析后的 JSON dict
         若解析失败则抛出异常，由上层处理
         """
         logger.debug("[Agent1] 发送 prompt，长度=%d 字符", len(prompt))
@@ -209,6 +212,7 @@ class Agent1Analyzer:
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,   # 偏低温度，保证输出格式稳定
             max_tokens=1024,
+            response_format={"type": "json_object"},
         )
 
         raw_text = response.choices[0].message.content.strip()
@@ -373,4 +377,4 @@ class Agent1Analyzer:
                 pass
 
         logger.error("[Agent1] JSON 解析失败，原始返回：%s", text[:500])
-        raise ValueError(f"GLM 返回内容无法解析为 JSON：{text[:200]}")
+        raise ValueError(f"DeepSeek 返回内容无法解析为 JSON：{text[:200]}")

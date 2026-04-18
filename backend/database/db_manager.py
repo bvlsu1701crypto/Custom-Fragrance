@@ -22,11 +22,21 @@ from typing import Optional
 class DatabaseManager:
     """基于 Pandas 读取 Excel 的数据管理器"""
 
+    _instance: Optional["DatabaseManager"] = None
+
     def __init__(self, db_path: str):
         self.db_path = db_path
         self._ingredients_df: Optional[pd.DataFrame] = None
         self._bases_df: Optional[pd.DataFrame] = None
         self._base_details_df: Optional[pd.DataFrame] = None
+
+    @classmethod
+    def get_instance(cls, db_path: str) -> "DatabaseManager":
+        """全局单例，供 Agent2 等模块复用同一份已加载数据"""
+        if cls._instance is None or cls._instance.db_path != db_path:
+            cls._instance = cls(db_path)
+            cls._instance.load_data()
+        return cls._instance
 
     def load_data(self):
         """加载所有数据到内存（应用启动时调用）"""

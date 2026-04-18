@@ -15,7 +15,7 @@ import re
 import random
 from typing import Any
 
-from zhipuai import ZhipuAI
+from openai import OpenAI
 
 from config.settings import settings
 from database.db_manager import DatabaseManager
@@ -69,6 +69,39 @@ _CONCENTRATION_PCT = {
 
 _DEFAULT_VOLUME_ML = 10.0
 
+# ── 层位关键词（用 function + usage 文本匹配）──────────────────
+_TOP_NOTE_KEYWORDS = ("顶香", "开香", "绿叶", "青草", "柠檬皮", "晨露")
+
+_BASE_NOTE_KEYWORDS = (
+    "基香", "底香", "定香", "定型", "打底", "尾调", "收尾", "留香",
+    "麝香", "木质", "树脂", "琥珀", "广藿", "香草主体", "豆感", "焦糖",
+)
+
+# ── 香调族群 → 可能出现在 function/usage/name 的关键词 ─────────
+_FAMILY_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "花香":      ("花", "玫瑰", "茉莉", "栀子", "铃兰", "白花", "鸢尾", "紫罗兰", "覆盆子"),
+    "木质":      ("木", "雪松", "檀香", "广藿", "愈创"),
+    "柑橘":      ("柑", "橘", "柠檬", "佛手", "葡萄柚", "古龙", "柚", "香橙"),
+    "东方/辛辣":  ("东方", "辛", "香料", "肉桂", "丁香", "琥珀", "树脂", "秘鲁", "安息香"),
+    "海洋/清新":  ("海", "水生", "空气", "瓜", "晨露", "清新"),
+    "美食调":    ("甜", "香草", "焦糖", "咖啡", "巧克力", "蜜", "糖", "奶", "豆感", "香兰"),
+    "麝香":      ("麝",),
+    "青草/绿叶":  ("草", "绿", "叶", "薄荷", "茶", "罗勒"),
+}
+
+
+def _row_text(row: dict) -> str:
+    """拼接一条原料的所有可匹配文本字段（忽略 NaN）"""
+    parts = []
+    for key in ("function", "usage", "name_cn", "name", "description"):
+        v = row.get(key)
+        if v is None:
+            continue
+        s = str(v)
+        if s and s.lower() != "nan":
+            parts.append(s)
+    return " ".join(parts)
+
 
 class Agent2Executor:
     """
@@ -76,11 +109,14 @@ class Agent2Executor:
     将 Agent1 的偏好画像转化为具体的香水配方和文案
     """
 
-    MODEL = "GLM-5.1"
+    MODEL = "deepseek-chat"
 
     def __init__(self) -> None:
         self.db  = DatabaseManager.get_instance(settings.DATABASE_PATH)
-        self.llm = ZhipuAI(api_key=settings.ZHIPU_API_KEY)
+        self.llm = OpenAI(
+            api_key=settings.DEEPSEEK_API_KEY,
+            base_url=settings.DEEPSEEK_BASE_URL,
+        )
 
     # ── 公开接口 ────────────────────────────────────────────────
 
@@ -101,13 +137,10 @@ class Agent2Executor:
             profile.budget_level, profile.longevity,
         )
 
-        # Step 1：多维度筛选精油
+        # Step 1：按层位 + 家族关键词筛选精油
         top_oils, mid_oils, base_oils = self._select_oils(
             scent_families=profile.scent_families,
             avoided_notes=profile.avoided_notes,
-            sillage=profile.sillage,
-            budget_level=profile.budget_level,
-            longevity=profile.longevity,
         )
 
         # Step 2：计算配比
@@ -149,105 +182,105 @@ class Agent2Executor:
         self,
         scent_families: list[str],
         avoided_notes: list[str],
-        sillage: str,
-        budget_level: str,
-        longevity: str,
     ) -> tuple[list[dict], list[dict], list[dict]]:
         """
-        按四个维度过滤精油：
-          1. 香调族群匹配（scent_families）
-          2. 扩散半径在 sillage 对应的 cm 范围内
-          3. 成本系数 <= budget_level 对应上限
-          4. 中调持久度在 longevity 对应的小时范围内（仅对中调生效）
+        根据真实 ingredients.xlsx schema 筛选精油：
+
+          字段：function / usage / name_cn / intensity / in_stock
+
+        流程：
+          1. 过滤 in_stock=True
+          2. 按 function/usage 文本把每条原料归类到 前/中/后调
+          3. 每层用家族关键词匹配；匹配不到则回退到全层
+          4. 排除 avoided_notes 中的关键词
         """
-        # 全量原料
         all_oils = self.db.get_all_ingredients()
         if not all_oils:
             logger.warning("[Agent2] 原料库为空，返回空配方")
             return [], [], []
 
-        cm_lo,  cm_hi  = _SILLAGE_CM.get(sillage, (0, 999))
-        max_cost       = _BUDGET_COST_COEF.get(budget_level, 2.0)
-        lon_lo, lon_hi = _LONGEVITY_HOURS.get(longevity, (0, 99))
+        # Step 1：可用库存
+        stocked = [r for r in all_oils if self._truthy(r.get("in_stock"))]
 
-        def _val(row: dict, *keys, default=None):
-            """按优先级取第一个有值的字段"""
-            for k in keys:
-                v = row.get(k)
-                if v is not None:
-                    return v
-            return default
+        # Step 2：按层位分桶
+        layer_pools: dict[str, list[dict]] = {"前调": [], "中调": [], "后调": []}
+        for row in stocked:
+            layer_pools[self._note_layer(row)].append(row)
 
-        def _match_family(row: dict) -> bool:
-            family = str(_val(row, "scent_family", "香调族群", "scent_type", default=""))
-            return any(f.lower() in family.lower() for f in scent_families)
+        # Step 3/4：每层做家族匹配 + 过敏排除，不足则回退
+        top_oils  = self._filter_and_pick(layer_pools["前调"], scent_families, avoided_notes)
+        mid_oils  = self._filter_and_pick(layer_pools["中调"], scent_families, avoided_notes)
+        base_oils = self._filter_and_pick(layer_pools["后调"], scent_families, avoided_notes)
+
+        logger.info(
+            "[Agent2] 筛选结果 | 前调=%d 中调=%d 后调=%d（层池: %d/%d/%d）",
+            len(top_oils), len(mid_oils), len(base_oils),
+            len(layer_pools["前调"]), len(layer_pools["中调"]), len(layer_pools["后调"]),
+        )
+        return top_oils, mid_oils, base_oils
+
+    @staticmethod
+    def _truthy(v: Any) -> bool:
+        """处理 bool / 'True' / 1 / NaN 等多种可能"""
+        if v is None:
+            return False
+        if isinstance(v, bool):
+            return v
+        s = str(v).strip().lower()
+        return s in ("true", "1", "yes", "y", "t")
+
+    @staticmethod
+    def _note_layer(row: dict) -> str:
+        """根据 function+usage 文本判断前/中/后调"""
+        text = _row_text(row)
+        if any(k in text for k in _TOP_NOTE_KEYWORDS):
+            return "前调"
+        if any(k in text for k in _BASE_NOTE_KEYWORDS):
+            return "后调"
+        return "中调"
+
+    def _filter_and_pick(
+        self,
+        pool: list[dict],
+        scent_families: list[str],
+        avoided_notes: list[str],
+    ) -> list[dict]:
+        """
+        在单层池里按家族关键词匹配 + 排除 avoided。
+        家族匹配为空时回退为"层内任意"，保证不会返回空。
+        """
+        if not pool:
+            return []
+
+        # 组装当前用户选择对应的家族关键词
+        family_kws: list[str] = []
+        for fam in scent_families:
+            family_kws.extend(_FAMILY_KEYWORDS.get(fam, (fam,)))
 
         def _not_avoided(row: dict) -> bool:
             if not avoided_notes:
                 return True
-            family = str(_val(row, "scent_family", "香调族群", default=""))
-            name   = str(_val(row, "name", "名称", default=""))
-            return not any(av.lower() in family.lower() or av.lower() in name.lower()
-                           for av in avoided_notes)
+            text = _row_text(row)
+            return not any(av and av in text for av in avoided_notes)
 
-        def _in_diffusion(row: dict) -> bool:
-            raw = _val(row, "diffusion_cm", "扩散半径", "diffusion_distance")
-            if raw is None:
-                return True   # 无数据时不过滤
-            try:
-                return cm_lo <= float(raw) <= cm_hi
-            except (ValueError, TypeError):
+        def _match_family(row: dict) -> bool:
+            if not family_kws:
                 return True
+            text = _row_text(row)
+            return any(kw in text for kw in family_kws)
 
-        def _under_cost(row: dict) -> bool:
-            raw = _val(row, "cost_coefficient", "成本系数")
-            if raw is None:
-                return True
-            try:
-                return float(raw) <= max_cost
-            except (ValueError, TypeError):
-                return True
+        matched = [r for r in pool if _match_family(r) and _not_avoided(r)]
 
-        def _longevity_ok(row: dict) -> bool:
-            """仅对中调生效：持久度在目标范围内"""
-            raw = _val(row, "longevity_hours", "持久度", "middle_longevity_hours")
-            if raw is None:
-                return True
-            try:
-                return lon_lo <= float(raw) <= lon_hi
-            except (ValueError, TypeError):
-                return True
+        # 家族匹配不到则回退：只排除 avoided
+        if not matched:
+            logger.debug("[Agent2] 层内家族无匹配，回退到全层")
+            matched = [r for r in pool if _not_avoided(r)]
 
-        def _note_type(row: dict) -> str:
-            return str(_val(row, "note_type", "调性", "category", default=""))
+        if not matched:
+            return []
 
-        # 基础过滤：香调 + 排除 + 扩散 + 成本
-        base_pool = [r for r in all_oils
-                     if _match_family(r) and _not_avoided(r)
-                     and _in_diffusion(r) and _under_cost(r)]
-
-        # 按调性分桶
-        top_pool  = [r for r in base_pool if "前调" in _note_type(r)]
-        # 中调额外过滤持久度
-        mid_pool  = [r for r in base_pool if "中调" in _note_type(r) and _longevity_ok(r)]
-        base_pool_ = [r for r in base_pool if "后调" in _note_type(r)]
-
-        def _pick(pool: list[dict], n: int) -> list[dict]:
-            if not pool:
-                return []
-            random.shuffle(pool)
-            return pool[:n]
-
-        top_oils  = _pick(top_pool,   _MAX_OILS_PER_NOTE)
-        mid_oils  = _pick(mid_pool,   _MAX_OILS_PER_NOTE)
-        base_oils = _pick(base_pool_, _MAX_OILS_PER_NOTE)
-
-        logger.debug(
-            "[Agent2] 筛选结果 | 前调=%d 中调=%d 后调=%d（池: %d/%d/%d）",
-            len(top_oils), len(mid_oils), len(base_oils),
-            len(top_pool), len(mid_pool), len(base_pool_),
-        )
-        return top_oils, mid_oils, base_oils
+        random.shuffle(matched)
+        return matched[:_MAX_OILS_PER_NOTE]
 
     # ── Step 2：配比计算 ────────────────────────────────────────
 
@@ -338,7 +371,7 @@ class Agent2Executor:
     ) -> tuple[str, str]:
         """
         将真实精油参数（扩散距离/留香时长）和 selection_basis 注入 prompt，
-        调用 GLM 生成有画面感的文案和专业选择理由
+        调用 DeepSeek 生成有画面感的文案和专业选择理由
         """
         profile = agent1_output.preference_profile
         env     = agent1_output.environmental_context
@@ -346,18 +379,24 @@ class Agent2Executor:
         def _oil_detail(notes: list[FormulaNote], oils: list[dict]) -> str:
             lines = []
             for note, oil in zip(notes, oils):
-                diff_cm  = oil.get("diffusion_cm")   or oil.get("扩散半径")   or "—"
-                lon_h    = oil.get("longevity_hours") or oil.get("持久度")    or "—"
-                lines.append(
-                    f"  {note.name} {note.percentage}%"
-                    f"（扩散半径 {diff_cm} cm，留香 {lon_h} h）"
-                )
+                desc_parts = []
+                for key in ("function", "usage"):
+                    v = oil.get(key)
+                    if v is not None and str(v).lower() != "nan" and str(v).strip():
+                        desc_parts.append(str(v).strip())
+                desc = "（" + "；".join(desc_parts) + "）" if desc_parts else ""
+                lines.append(f"  {note.name} {note.percentage}%{desc}")
             return "\n".join(lines) if lines else "  无"
 
         top_detail    = _oil_detail(top_notes,  top_oils)
         mid_detail    = _oil_detail(mid_notes,  mid_oils)
         base_detail   = _oil_detail(base_notes, base_oils)
         selection_basis = self._build_selection_basis(profile, env, specs)
+
+        # 收集所有原料名，让 DeepSeek 一次性给出「原料 → 大众香调名」的映射
+        all_notes = list(top_notes) + list(mid_notes) + list(base_notes)
+        raw_names = [n.name for n in all_notes]
+        naming_lines = "\n".join(f"- {n}" for n in raw_names) or "- 无"
 
         prompt = f"""你是一位诗意的香水文案师，同时也是专业调香顾问。
 
@@ -393,7 +432,7 @@ class Agent2Executor:
 
 ## 任务
 
-请生成两段文字，以 JSON 格式返回：
+请生成以下三部分内容，以 JSON 格式返回：
 
 1. **scent_description**（150字以内）
    - 生动描述这款香水的气味层次和整体感受
@@ -406,8 +445,16 @@ class Agent2Executor:
    - 说明香油选择的科学依据
    - 专业但易懂
 
+3. **common_names**（原料名 → 大众香调名的映射）
+   - 把下面每个原料转换成消费者能一眼看懂的香调名（2-5 个汉字）
+   - 去掉技术后缀（-酮/-醛/TE 级/高顺式 等），保留可识别的核心香调
+   - 示例：佛手柑油→香柠檬；高顺式 HEDIONE→茉莉；甲位紫罗兰酮→紫罗兰；雪松精油 TE 级→雪松；乙基香兰素→香草；香豆素→零陵香；顺-3-己烯醇→青草
+   - 每一个原料都必须映射，不得遗漏
+   - 原料列表：
+{naming_lines}
+
 **只返回 JSON，格式：**
-{{"scent_description": "...", "selection_rationale": "..."}}"""
+{{"scent_description": "...", "selection_rationale": "...", "common_names": {{"原料名1": "大众名1", "原料名2": "大众名2"}}}}"""
 
         try:
             resp = self.llm.chat.completions.create(
@@ -415,13 +462,22 @@ class Agent2Executor:
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.7,
                 max_tokens=512,
+                response_format={"type": "json_object"},
             )
             raw  = resp.choices[0].message.content.strip()
             data = self._parse_json(raw)
             description = data.get("scent_description", "一款为您专属调配的香水。")
             rationale   = data.get("selection_rationale", "根据您的偏好和当前环境精心调配。")
+
+            # 把原料学名替换为大众香调名（DeepSeek 返回的 common_names 映射）
+            common = data.get("common_names") or {}
+            if isinstance(common, dict):
+                for note in all_notes:
+                    display = common.get(note.name)
+                    if display and isinstance(display, str) and display.strip():
+                        note.name = display.strip()
         except Exception as exc:
-            logger.warning("[Agent2] GLM 文案生成失败：%s，使用兜底文案", exc)
+            logger.warning("[Agent2] DeepSeek 文案生成失败：%s，使用兜底文案", exc)
             top_names  = "、".join(n.name for n in top_notes)  or "无"
             mid_names  = "、".join(n.name for n in mid_notes)  or "无"
             base_names = "、".join(n.name for n in base_notes) or "无"
