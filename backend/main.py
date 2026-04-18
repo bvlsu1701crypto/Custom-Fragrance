@@ -1,80 +1,77 @@
 """
 应用入口 (Main Entry Point)
 
-启动 FastAPI 应用，注册路由、中间件、启动事件
-运行方式：
-  uvicorn main:app --reload --host 0.0.0.0 --port 8000
+启动方式：
+  python main.py
+  或
+  uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 """
 
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from contextlib import asynccontextmanager
+from __future__ import annotations
 
-from api.routes import router
-from config.settings import get_settings
-from database.db_manager import DatabaseManager
+import logging
+import logging.config
 
+import uvicorn
 
-settings = get_settings()
+from config.settings import settings
 
+# ── 日志配置 ────────────────────────────────────────────────────
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """
-    应用生命周期管理
-    启动时预加载数据库数据，关闭时做清理
-    """
-    # 启动：预加载 Excel 数据到内存
-    print("[Startup] 加载香水原料数据库...")
-    db = DatabaseManager(db_path=settings.DATABASE_PATH)
-    db.load_data()
-    app.state.db = db
-    print("[Startup] 服务启动完成 ✓")
+LOGGING_CONFIG = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "default": {
+            "format": "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+            "datefmt": "%Y-%m-%d %H:%M:%S",
+        },
+    },
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "default",
+            "stream": "ext://sys.stdout",
+        },
+    },
+    "root": {
+        "level": "DEBUG" if settings.DEBUG else "INFO",
+        "handlers": ["console"],
+    },
+    # 降低第三方库的日志级别，避免刷屏
+    "loggers": {
+        "uvicorn":        {"level": "INFO",    "propagate": True},
+        "uvicorn.access": {"level": "WARNING", "propagate": True},
+        "httpx":          {"level": "WARNING", "propagate": True},
+        "zhipuai":        {"level": "WARNING", "propagate": True},
+    },
+}
 
-    yield  # 应用运行中
+logging.config.dictConfig(LOGGING_CONFIG)
+logger = logging.getLogger(__name__)
 
-    # 关闭：清理资源
-    print("[Shutdown] 服务关闭")
+# ── 导入 FastAPI app（日志初始化后再导入，确保模块内 logger 生效）──
 
-
-app = FastAPI(
-    title="香水AI生成器 API",
-    description="基于 Claude 双 Agent 架构的个性化香水配方生成服务",
-    version="1.0.0",
-    lifespan=lifespan,
-    docs_url="/docs",       # Swagger UI
-    redoc_url="/redoc",     # ReDoc UI
-)
-
-# ── 跨域中间件（允许前端访问）─────────────────
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.CORS_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# ── 注册 API 路由 ──────────────────────────────
-app.include_router(router)
+from api.routes import app  # noqa: E402
 
 
-@app.get("/")
-async def root():
-    """根路由，返回服务基本信息"""
-    return {
-        "service": "香水AI生成器",
-        "version": "1.0.0",
-        "docs": "/docs",
-        "status": "running",
-    }
-
+# ── 启动入口 ────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    import uvicorn
+    logger.info("=" * 60)
+    logger.info("  Custom Fragrance API  启动中...")
+    logger.info("=" * 60)
+    logger.info("  端口     : %d", settings.PORT)
+    logger.info("  调试模式 : %s", settings.DEBUG)
+    logger.info("  数据目录 : %s", settings.DATABASE_PATH)
+    logger.info("  CORS 源  : %s", settings.ALLOWED_ORIGINS)
+    logger.info("  文档地址 : http://localhost:%d/docs", settings.PORT)
+    logger.info("=" * 60)
+
     uvicorn.run(
         "main:app",
-        host=settings.HOST,
+        host="0.0.0.0",
         port=settings.PORT,
         reload=settings.DEBUG,
+        log_config=None,    # 使用上方自定义日志配置，禁用 uvicorn 默认配置
     )
