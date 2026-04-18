@@ -1,10 +1,8 @@
 export interface UserPreferences {
   occasion: string
   scent_preference: string[]
-  longevity: string
   sillage: string
   concentration: string
-  budget_level: string
   avoided_notes: string[]
   time_of_day: string
   free_description: string
@@ -18,19 +16,13 @@ export interface BiometricData {
 
 export interface EnvironmentData {
   city: string
-  temperature: number
-  humidity: number
-  condition: string
-  season: string
 }
 
 export interface RecommendationOutput {
   occasion: string
   scent_preference: string[]
-  longevity: string
   sillage: string
   concentration: string
-  budget_level: string
   avoided_notes: string[]
   time_of_day: string
   body_temperature: number
@@ -68,13 +60,6 @@ export const OCCASIONS = [
   { id: 'formal', name: 'Formal/Special', nameZh: '正式' },
 ]
 
-export const LONGEVITY_OPTIONS = [
-  { id: 'short', name: 'Under 2 hours', nameZh: '2小时以内' },
-  { id: 'medium', name: '2-4 hours', nameZh: '2-4小时' },
-  { id: 'long', name: '4-6 hours', nameZh: '4-6小时' },
-  { id: 'extended', name: '6+ hours', nameZh: '6小时以上' },
-]
-
 export const SILLAGE_OPTIONS = [
   { id: 'intimate', name: 'Intimate', nameZh: '贴身' },
   { id: 'close', name: 'Close Range', nameZh: '近距离' },
@@ -87,13 +72,6 @@ export const CONCENTRATION_OPTIONS = [
   { id: 'edp', name: 'Eau de Parfum', nameZh: '香水' },
   { id: 'parfum', name: 'Parfum', nameZh: '浓香水' },
   { id: 'extrait', name: 'Extrait', nameZh: '香精' },
-]
-
-export const BUDGET_OPTIONS = [
-  { id: 'budget', name: 'Budget', nameZh: '经济', range: '$30-60' },
-  { id: 'midrange', name: 'Mid-Range', nameZh: '中档', range: '$60-120' },
-  { id: 'premium', name: 'Premium', nameZh: '高档', range: '$120-250' },
-  { id: 'luxury', name: 'Luxury', nameZh: '奢华', range: '$250+' },
 ]
 
 export const TIME_OPTIONS = [
@@ -154,5 +132,5 @@ export interface FragranceNotes {
 
 export interface FragranceDescription {
   zh: string
-  en: string
+  en?: string
 }

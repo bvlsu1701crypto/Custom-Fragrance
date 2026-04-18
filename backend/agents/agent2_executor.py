@@ -70,11 +70,25 @@ _CONCENTRATION_PCT = {
 _DEFAULT_VOLUME_ML = 10.0
 
 # ── 层位关键词（用 function + usage 文本匹配）──────────────────
-_TOP_NOTE_KEYWORDS = ("顶香", "开香", "绿叶", "青草", "柠檬皮", "晨露")
+_TOP_NOTE_KEYWORDS = (
+    # 原有：顶调/开场性词
+    "顶香", "开香", "绿叶", "青草", "柠檬皮", "晨露",
+    # 柑橘顶调
+    "柑", "橘", "古龙", "清新顶香", "佛手",
+    # 水生/海洋顶调
+    "水感", "海洋水感", "海风", "瓜感", "臭氧", "空气感",
+    # 芳香草本顶调
+    "罗勒", "薄荷", "薰衣草",
+)
+
+# 定香/功能性辅料——单独归桶，不进三层展示
+_FIXATIVE_KEYWORDS = ("定香", "溶解树脂", "溶解剂")
 
 _BASE_NOTE_KEYWORDS = (
-    "基香", "底香", "定香", "定型", "打底", "尾调", "收尾", "留香",
-    "麝香", "木质", "树脂", "琥珀", "广藿", "香草主体", "豆感", "焦糖",
+    # 层位显式标记
+    "基香", "底香", "打底", "尾调", "收尾", "留香", "定型",
+    # 典型后调原料/家族（保留真正只出现在底调的词，剔除"木质/麝香/琥珀/焦糖"等会误伤中调的家族词）
+    "树脂", "广藿", "香草主体", "豆感", "安息香",
 )
 
 # ── 香调族群 → 可能出现在 function/usage/name 的关键词 ─────────
@@ -88,6 +102,19 @@ _FAMILY_KEYWORDS: dict[str, tuple[str, ...]] = {
     "麝香":      ("麝",),
     "青草/绿叶":  ("草", "绿", "叶", "薄荷", "茶", "罗勒"),
 }
+
+
+def _expand_avoided(avoided: list[str]) -> set[str]:
+    """把用户填的族群名展开成具体关键词；非族群名保留原文兜底自由文本。"""
+    expanded: set[str] = set()
+    for av in avoided:
+        if not av:
+            continue
+        if av in _FAMILY_KEYWORDS:
+            expanded.update(_FAMILY_KEYWORDS[av])
+        else:
+            expanded.add(av)
+    return expanded
 
 
 def _row_text(row: dict) -> str:
@@ -202,8 +229,8 @@ class Agent2Executor:
         # Step 1：可用库存
         stocked = [r for r in all_oils if self._truthy(r.get("in_stock"))]
 
-        # Step 2：按层位分桶
-        layer_pools: dict[str, list[dict]] = {"前调": [], "中调": [], "后调": []}
+        # Step 2：按层位分桶（定香单独成桶，不参与前/中/后调展示）
+        layer_pools: dict[str, list[dict]] = {"前调": [], "中调": [], "后调": [], "定香": []}
         for row in stocked:
             layer_pools[self._note_layer(row)].append(row)
 
@@ -213,9 +240,10 @@ class Agent2Executor:
         base_oils = self._filter_and_pick(layer_pools["后调"], scent_families, avoided_notes)
 
         logger.info(
-            "[Agent2] 筛选结果 | 前调=%d 中调=%d 后调=%d（层池: %d/%d/%d）",
+            "[Agent2] 筛选结果 | 前调=%d 中调=%d 后调=%d（层池: %d/%d/%d，定香池=%d已隐藏）",
             len(top_oils), len(mid_oils), len(base_oils),
             len(layer_pools["前调"]), len(layer_pools["中调"]), len(layer_pools["后调"]),
+            len(layer_pools["定香"]),
         )
         return top_oils, mid_oils, base_oils
 
@@ -231,11 +259,23 @@ class Agent2Executor:
 
     @staticmethod
     def _note_layer(row: dict) -> str:
-        """根据 function+usage 文本判断前/中/后调"""
-        text = _row_text(row)
-        if any(k in text for k in _TOP_NOTE_KEYWORDS):
+        """
+        根据 function 字段（结构角色）判断层位：
+          - 定香/溶解等功能性辅料 → '定香'（不进三层展示）
+          - 前调关键词 → '前调'
+          - 后调关键词 → '后调'
+          - 其他默认 → '中调'
+        注意：只看 function，不看 usage/description，避免"usage 里出现'空气感'"
+        这类气味描述把中/后调原料误判到前调。
+        """
+        func = str(row.get("function") or "")
+        if func.lower() in ("", "nan"):
+            return "中调"
+        if any(k in func for k in _FIXATIVE_KEYWORDS):
+            return "定香"
+        if any(k in func for k in _TOP_NOTE_KEYWORDS):
             return "前调"
-        if any(k in text for k in _BASE_NOTE_KEYWORDS):
+        if any(k in func for k in _BASE_NOTE_KEYWORDS):
             return "后调"
         return "中调"
 
@@ -252,16 +292,23 @@ class Agent2Executor:
         if not pool:
             return []
 
+        # 把同时出现在偏好和排斥里的家族剔除掉，防止 include/exclude 互相抵消
+        avoided_set = set(avoided_notes or [])
+        safe_families = [f for f in scent_families if f not in avoided_set]
+
         # 组装当前用户选择对应的家族关键词
         family_kws: list[str] = []
-        for fam in scent_families:
+        for fam in safe_families:
             family_kws.extend(_FAMILY_KEYWORDS.get(fam, (fam,)))
 
+        # 把 avoided 展开成具体关键词（与 include 展开对称）
+        avoided_kws = _expand_avoided(avoided_notes)
+
         def _not_avoided(row: dict) -> bool:
-            if not avoided_notes:
+            if not avoided_kws:
                 return True
             text = _row_text(row)
-            return not any(av and av in text for av in avoided_notes)
+            return not any(kw in text for kw in avoided_kws)
 
         def _match_family(row: dict) -> bool:
             if not family_kws:

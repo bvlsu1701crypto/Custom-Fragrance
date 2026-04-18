@@ -148,8 +148,9 @@ class Agent1Input(BaseModel):
     questionnaire: QuestionnaireAnswers = Field(
         description="用户对 8 个指定问题的回答"
     )
-    weather: WeatherInfo = Field(
-        description="由系统根据 watch_data 经纬度联网获取的当前天气"
+    weather: Optional[WeatherInfo] = Field(
+        default=None,
+        description="当前天气。留空时由后端根据 watch_data 经纬度自动查询。"
     )
 
 
@@ -287,4 +288,8 @@ class FinalOutput(BaseModel):
         gt=0,
         le=40,
         description="香精浓度（%）：EDT≈10%，EDP≈15%，香精≈25%"
+    )
+    weather_snapshot: Optional[WeatherInfo] = Field(
+        default=None,
+        description="本次生成实际使用的天气快照，用于前端结果页展示。"
     )

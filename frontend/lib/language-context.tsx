@@ -82,10 +82,8 @@ interface Translations {
   occasion: string
   scentFamilies: string
   avoid: string
-  longevity: string
   projection: string
   concentration: string
-  budget: string
   timeOfDay: string
   additional: string
   additionalPlaceholder: string
@@ -180,10 +178,8 @@ const translations: Record<Language, Translations> = {
     occasion: "场合 · Occasion",
     scentFamilies: "香调 · Scent Families",
     avoid: "避免 · Avoid",
-    longevity: "持久度 · Longevity",
     projection: "扩散度 · Projection",
     concentration: "浓度 · Concentration",
-    budget: "预算 · Budget",
     timeOfDay: "时段 · Time of Day",
     additional: "补充 · Additional",
     additionalPlaceholder: "例如：我喜欢清新但不太浓烈的香味",
@@ -276,10 +272,8 @@ const translations: Record<Language, Translations> = {
     occasion: "Occasion",
     scentFamilies: "Scent Families",
     avoid: "Avoid",
-    longevity: "Longevity",
     projection: "Projection",
     concentration: "Concentration",
-    budget: "Budget",
     timeOfDay: "Time of Day",
     additional: "Additional Notes",
     additionalPlaceholder: "e.g., I prefer fresh scents that aren't too strong",

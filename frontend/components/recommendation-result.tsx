@@ -123,7 +123,9 @@ export function RecommendationResult({ result }: RecommendationResultProps) {
           <div className="h-px w-12 bg-border" />
         </div>
         <p className="font-serif text-lg leading-relaxed text-foreground/90 md:text-xl">
-          {language === "zh" ? result.fragrance_description.zh : result.fragrance_description.en}
+          {language === "zh"
+            ? result.fragrance_description.zh
+            : (result.fragrance_description.en ?? result.fragrance_description.zh)}
         </p>
       </section>
 
@@ -140,20 +142,12 @@ export function RecommendationResult({ result }: RecommendationResultProps) {
               <span className="font-serif text-lg">{result.occasion}</span>
             </div>
             <div className="flex items-baseline justify-between border-b border-border pb-4">
-              <span className="text-sm text-muted-foreground">{language === "zh" ? "持久度 Longevity" : "Longevity"}</span>
-              <span className="font-serif text-lg">{result.longevity}</span>
-            </div>
-            <div className="flex items-baseline justify-between border-b border-border pb-4">
               <span className="text-sm text-muted-foreground">{language === "zh" ? "扩散度 Projection" : "Projection"}</span>
               <span className="font-serif text-lg">{result.sillage}</span>
             </div>
             <div className="flex items-baseline justify-between border-b border-border pb-4">
               <span className="text-sm text-muted-foreground">{language === "zh" ? "浓度 Concentration" : "Concentration"}</span>
               <span className="font-serif text-lg">{result.concentration}</span>
-            </div>
-            <div className="flex items-baseline justify-between border-b border-border pb-4">
-              <span className="text-sm text-muted-foreground">{language === "zh" ? "预算 Budget" : "Budget"}</span>
-              <span className="font-serif text-lg">{result.budget_level}</span>
             </div>
             <div className="flex items-baseline justify-between pb-4">
               <span className="text-sm text-muted-foreground">{language === "zh" ? "时段 Time" : "Time of Day"}</span>

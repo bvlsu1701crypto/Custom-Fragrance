@@ -18,18 +18,9 @@ import type {
   EnvironmentData,
   RecommendationOutput,
 } from "@/lib/types"
-import {
-  SCENT_FAMILIES,
-  OCCASIONS,
-  LONGEVITY_OPTIONS,
-  SILLAGE_OPTIONS,
-  CONCENTRATION_OPTIONS,
-  BUDGET_OPTIONS,
-  TIME_OPTIONS,
-  ACTIVITY_LEVELS,
-  WEATHER_CONDITIONS,
-  SEASONS,
-} from "@/lib/types"
+import { generatePerfume } from "@/lib/api/service"
+import { ApiError } from "@/lib/api/schemas"
+import { toast } from "sonner"
 import { ArrowLeft, ArrowRight } from "lucide-react"
 
 const STEPS_ZH = ["偏好", "生理", "环境", "结果"]
@@ -38,10 +29,8 @@ const STEPS_EN = ["Preferences", "Biometrics", "Environment", "Results"]
 const initialPreferences: UserPreferences = {
   occasion: "",
   scent_preference: [],
-  longevity: "",
   sillage: "",
   concentration: "",
-  budget_level: "",
   avoided_notes: [],
   time_of_day: "",
   free_description: "",
@@ -55,193 +44,6 @@ const initialBiometrics: BiometricData = {
 
 const initialEnvironment: EnvironmentData = {
   city: "Shanghai",
-  temperature: 22,
-  humidity: 55,
-  condition: "sunny",
-  season: "spring",
-}
-
-function generateRecommendation(
-  preferences: UserPreferences,
-  biometrics: BiometricData,
-  environment: EnvironmentData
-): RecommendationOutput {
-  let adjustedConcentration = preferences.concentration
-  let adjustedSillage = preferences.sillage
-  let adjustedScents = [...preferences.scent_preference]
-  const summaryParts: string[] = []
-
-  if (biometrics.body_temperature > 37) {
-    adjustedConcentration = "edt"
-    if (!adjustedScents.includes("citrus")) adjustedScents.push("citrus")
-    if (!adjustedScents.includes("fresh")) adjustedScents.push("fresh")
-    summaryParts.push("Elevated body temperature detected - recommending lighter, fresher options")
-  }
-
-  if (biometrics.activity_level === "intense" || biometrics.activity_level === "moderate") {
-    adjustedConcentration = "edt"
-    adjustedSillage = adjustedSillage === "strong" || adjustedSillage === "moderate" ? "close" : adjustedSillage
-    summaryParts.push("Active state detected - reducing projection for comfort")
-  }
-
-  if (environment.temperature > 28 && environment.humidity > 70) {
-    if (!adjustedScents.includes("citrus")) adjustedScents.push("citrus")
-    if (!adjustedScents.includes("fresh")) adjustedScents.push("fresh")
-    if (!adjustedScents.includes("herbal")) adjustedScents.push("herbal")
-    summaryParts.push("Hot and humid environment - emphasizing fresh, aquatic notes")
-  } else if (environment.temperature < 15 && environment.humidity < 40) {
-    if (!adjustedScents.includes("woody")) adjustedScents.push("woody")
-    if (!adjustedScents.includes("oriental")) adjustedScents.push("oriental")
-    if (!adjustedScents.includes("spicy")) adjustedScents.push("spicy")
-    summaryParts.push("Cool and dry conditions - favoring warm, enveloping scents")
-  }
-
-  if (preferences.occasion === "work" || preferences.occasion === "formal") {
-    if (adjustedSillage === "strong" || adjustedSillage === "moderate") {
-      adjustedSillage = "close"
-    }
-    adjustedScents = adjustedScents.filter((s) => s !== "sweet")
-    summaryParts.push("Professional setting - keeping projection subtle and sophisticated")
-  } else if (preferences.occasion === "sport") {
-    adjustedSillage = "intimate"
-    adjustedConcentration = "edt"
-    summaryParts.push("Athletic activity - light and close projection recommended")
-  }
-
-  // Enhanced: User's additional notes have higher priority influence
-  if (preferences.free_description) {
-    const desc = preferences.free_description.toLowerCase()
-    const userNoteParts: string[] = []
-    
-    // Fresh/Light preferences - prioritize citrus and fresh notes
-    if (desc.includes("fresh") || desc.includes("light") || desc.includes("清新") || desc.includes("清爽") || desc.includes("淡")) {
-      adjustedScents = adjustedScents.filter(s => s !== "oriental" && s !== "sweet")
-      if (!adjustedScents.includes("citrus")) adjustedScents.unshift("citrus")
-      if (!adjustedScents.includes("fresh")) adjustedScents.unshift("fresh")
-      adjustedConcentration = "edt"
-      userNoteParts.push("fresh and light profile prioritized")
-    }
-    
-    // Long-lasting preferences
-    if (desc.includes("long") || desc.includes("lasting") || desc.includes("持久") || desc.includes("持香")) {
-      adjustedConcentration = "parfum"
-      userNoteParts.push("extended longevity emphasized")
-    }
-    
-    // Subtle/Not too strong preferences
-    if (desc.includes("subtle") || desc.includes("不要太浓") || desc.includes("不要太强") || desc.includes("低调")) {
-      adjustedSillage = "intimate"
-      adjustedConcentration = "edt"
-      userNoteParts.push("subtle projection selected")
-    }
-    
-    // Sweet/Gourmand preferences
-    if (desc.includes("sweet") || desc.includes("甜") || desc.includes("美食")) {
-      if (!adjustedScents.includes("sweet")) adjustedScents.unshift("sweet")
-      userNoteParts.push("gourmand notes added")
-    }
-    
-    // Woody/Warm preferences
-    if (desc.includes("woody") || desc.includes("warm") || desc.includes("木质") || desc.includes("温暖")) {
-      if (!adjustedScents.includes("woody")) adjustedScents.unshift("woody")
-      if (!adjustedScents.includes("oriental")) adjustedScents.unshift("oriental")
-      userNoteParts.push("warm woody character emphasized")
-    }
-    
-    // Floral preferences
-    if (desc.includes("floral") || desc.includes("flower") || desc.includes("花香") || desc.includes("花")) {
-      if (!adjustedScents.includes("floral")) adjustedScents.unshift("floral")
-      userNoteParts.push("floral notes highlighted")
-    }
-    
-    // Strong/Powerful preferences
-    if (desc.includes("strong") || desc.includes("powerful") || desc.includes("浓") || desc.includes("强烈")) {
-      adjustedSillage = "strong"
-      adjustedConcentration = "parfum"
-      userNoteParts.push("bold projection selected")
-    }
-    
-    // Unisex/Gender-neutral preferences
-    if (desc.includes("unisex") || desc.includes("neutral") || desc.includes("中性")) {
-      adjustedScents = adjustedScents.filter(s => s !== "sweet")
-      if (!adjustedScents.includes("woody")) adjustedScents.push("woody")
-      if (!adjustedScents.includes("citrus")) adjustedScents.push("citrus")
-      userNoteParts.push("unisex character maintained")
-    }
-    
-    // Masculine preferences
-    if (desc.includes("masculine") || desc.includes("男性") || desc.includes("阳刚")) {
-      if (!adjustedScents.includes("woody")) adjustedScents.unshift("woody")
-      if (!adjustedScents.includes("leather")) adjustedScents.unshift("leather")
-      adjustedScents = adjustedScents.filter(s => s !== "floral" && s !== "sweet")
-      userNoteParts.push("masculine profile shaped")
-    }
-    
-    // Feminine preferences
-    if (desc.includes("feminine") || desc.includes("女性") || desc.includes("柔美")) {
-      if (!adjustedScents.includes("floral")) adjustedScents.unshift("floral")
-      if (!adjustedScents.includes("musky")) adjustedScents.unshift("musky")
-      userNoteParts.push("feminine elegance crafted")
-    }
-    
-    // Special occasion mentions
-    if (desc.includes("special") || desc.includes("特别") || desc.includes("重要") || desc.includes("important")) {
-      adjustedConcentration = "parfum"
-      userNoteParts.push("special occasion intensity applied")
-    }
-    
-    if (userNoteParts.length > 0) {
-      summaryParts.push("Based on your personal notes: " + userNoteParts.join(", "))
-    }
-  }
-
-  if (adjustedScents.length === 0) {
-    adjustedScents = ["woody", "citrus"]
-  }
-
-  const summary = summaryParts.length > 0 
-    ? summaryParts.join(". ") + "."
-    : "Based on your preferences and current conditions, we recommend a balanced fragrance profile suited to your lifestyle."
-
-  const getOccasionName = (id: string) => OCCASIONS.find(o => o.id === id)?.nameZh || id
-  const getLongevityName = (id: string) => LONGEVITY_OPTIONS.find(o => o.id === id)?.nameZh || id
-  const getSillageName = (id: string) => SILLAGE_OPTIONS.find(o => o.id === id)?.nameZh || id
-  const getConcentrationName = (id: string) => CONCENTRATION_OPTIONS.find(o => o.id === id)?.nameZh || id
-  const getBudgetName = (id: string) => BUDGET_OPTIONS.find(o => o.id === id)?.nameZh || id
-  const getTimeName = (id: string) => TIME_OPTIONS.find(o => o.id === id)?.nameZh || id
-  const getActivityName = (id: string) => ACTIVITY_LEVELS.find(o => o.id === id)?.nameZh || id
-  const getConditionName = (id: string) => WEATHER_CONDITIONS.find(o => o.id === id)?.nameZh || id
-  const getSeasonName = (id: string) => SEASONS.find(o => o.id === id)?.nameZh || id
-  const getScentName = (id: string) => SCENT_FAMILIES.find(o => o.id === id)?.nameZh || id
-
-  return {
-    occasion: getOccasionName(preferences.occasion || "daily"),
-    scent_preference: adjustedScents.map(getScentName),
-    longevity: getLongevityName(preferences.longevity || "medium"),
-    sillage: getSillageName(adjustedSillage || "close"),
-    concentration: getConcentrationName(adjustedConcentration || "edp"),
-    budget_level: getBudgetName(preferences.budget_level || "midrange"),
-    avoided_notes: preferences.avoided_notes.map(getScentName),
-    time_of_day: getTimeName(preferences.time_of_day || "allday"),
-    body_temperature: biometrics.body_temperature,
-    heart_rate: biometrics.heart_rate,
-    activity_level: getActivityName(biometrics.activity_level),
-    temperature: environment.temperature,
-    humidity: environment.humidity,
-    condition: getConditionName(environment.condition),
-    season: getSeasonName(environment.season),
-    city: environment.city,
-    analysis_summary: summary,
-    fragrance_notes: {
-      topNotes: ["柠檬", "香柠檬", "香草"],
-      middleNotes: ["鸢尾", "茉莉", "桦木"],
-      baseNotes: ["香草", "焦糖", "雪松"],
-    },
-    fragrance_description: {
-      zh: "这款香氛以清新的柠檬和香柠檬开场，带来一丝活力与清爽。随着时间推移，优雅的鸢尾与茉莉在中调绽放，散发出细腻的花香气息，同时桦木带来一抹清冷的木质感。基调由温暖的香草与焦糖构成，甜美却不腻人，雪松则为整体增添了沉稳与持久的余韵。这是一款适合日常穿戴的香氛，既清新又温暖，充满层次感。",
-      en: "This fragrance opens with a burst of fresh lemon and bergamot, delivering an invigorating and refreshing top note. As time unfolds, elegant iris and jasmine bloom in the heart, exuding a delicate floral essence, while birch adds a cool, woody undertone. The base is composed of warm vanilla and caramel—sweet yet not cloying—while cedar provides depth and a lasting, grounded finish. This is a versatile scent perfect for everyday wear, balancing freshness with warmth and layered sophistication."
-    },
-  }
 }
 
 export default function Home() {
@@ -258,11 +60,21 @@ export default function Home() {
   const handleNext = async () => {
     if (currentStep === 2) {
       setIsGenerating(true)
-      await new Promise((resolve) => setTimeout(resolve, 1500))
-      const recommendation = generateRecommendation(preferences, biometrics, environment)
-      setResult(recommendation)
-      setIsGenerating(false)
-      setCurrentStep(3)
+      try {
+        const recommendation = await generatePerfume(preferences, biometrics, environment)
+        setResult(recommendation)
+        setCurrentStep(3)
+      } catch (err) {
+        const message =
+          err instanceof ApiError
+            ? err.detail
+            : err instanceof Error
+              ? err.message
+              : "生成失败，请稍后重试"
+        toast.error(message)
+      } finally {
+        setIsGenerating(false)
+      }
     } else {
       setCurrentStep((prev) => Math.min(prev + 1, STEPS.length - 1))
     }

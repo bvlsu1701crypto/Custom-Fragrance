@@ -5,10 +5,8 @@ import {
   type UserPreferences,
   SCENT_FAMILIES,
   OCCASIONS,
-  LONGEVITY_OPTIONS,
   SILLAGE_OPTIONS,
   CONCENTRATION_OPTIONS,
-  BUDGET_OPTIONS,
   TIME_OPTIONS,
 } from "@/lib/types"
 import { cn } from "@/lib/utils"
@@ -127,34 +125,8 @@ export function PreferencesForm({ data, onChange }: PreferencesFormProps) {
         </div>
       </section>
 
-      {/* Longevity & Sillage */}
+      {/* Sillage & Concentration */}
       <div className="grid gap-6 md:grid-cols-2">
-        <section className="border border-border bg-card p-8">
-          <div className="mb-6">
-            <span className="text-xs uppercase tracking-[0.3em] text-muted-foreground">{t.longevity}</span>
-            <h3 className="mt-2 font-serif text-xl tracking-tight">
-              {language === "zh" ? "需要持续多久？" : "How long?"}
-            </h3>
-          </div>
-          <div className="space-y-2">
-            {LONGEVITY_OPTIONS.map((option) => (
-              <button
-                key={option.id}
-                onClick={() => onChange({ ...data, longevity: option.id })}
-                className={cn(
-                  "flex w-full items-center justify-between border px-4 py-3 transition-all duration-300",
-                  data.longevity === option.id
-                    ? "border-foreground bg-foreground text-background"
-                    : "border-border text-muted-foreground hover:border-foreground hover:text-foreground"
-                )}
-              >
-                <span className="text-sm">{option.nameZh}</span>
-                <span className="text-xs">{option.name}</span>
-              </button>
-            ))}
-          </div>
-        </section>
-
         <section className="border border-border bg-card p-8">
           <div className="mb-6">
             <span className="text-xs uppercase tracking-[0.3em] text-muted-foreground">{t.projection}</span>
@@ -180,10 +152,7 @@ export function PreferencesForm({ data, onChange }: PreferencesFormProps) {
             ))}
           </div>
         </section>
-      </div>
 
-      {/* Concentration & Budget */}
-      <div className="grid gap-6 md:grid-cols-2">
         <section className="border border-border bg-card p-8">
           <div className="mb-6">
             <span className="text-xs uppercase tracking-[0.3em] text-muted-foreground">{t.concentration}</span>
@@ -205,32 +174,6 @@ export function PreferencesForm({ data, onChange }: PreferencesFormProps) {
               >
                 <span className="text-sm">{option.nameZh}</span>
                 <span className="text-xs">{option.name}</span>
-              </button>
-            ))}
-          </div>
-        </section>
-
-        <section className="border border-border bg-card p-8">
-          <div className="mb-6">
-            <span className="text-xs uppercase tracking-[0.3em] text-muted-foreground">{t.budget}</span>
-            <h3 className="mt-2 font-serif text-xl tracking-tight">
-              {language === "zh" ? "预算范围" : "Investment level"}
-            </h3>
-          </div>
-          <div className="space-y-2">
-            {BUDGET_OPTIONS.map((option) => (
-              <button
-                key={option.id}
-                onClick={() => onChange({ ...data, budget_level: option.id })}
-                className={cn(
-                  "flex w-full items-center justify-between border px-4 py-3 transition-all duration-300",
-                  data.budget_level === option.id
-                    ? "border-foreground bg-foreground text-background"
-                    : "border-border text-muted-foreground hover:border-foreground hover:text-foreground"
-                )}
-              >
-                <span className="text-sm">{option.nameZh}</span>
-                <span className="text-xs opacity-60">{option.range}</span>
               </button>
             ))}
           </div>

@@ -17,7 +17,7 @@ export function ShareCard({ result }: ShareCardProps) {
 
   const shareText = language === "zh" 
     ? `我的专属香氛档案 | ScentMind\n\n香调结构:\n前调: ${result.fragrance_notes.topNotes.join(", ")}\n中调: ${result.fragrance_notes.middleNotes.join(", ")}\n后调: ${result.fragrance_notes.baseNotes.join(", ")}\n\n推荐香调: ${result.scent_preference.join(", ")}\n场合: ${result.occasion}\n浓度: ${result.concentration}\n\n${result.fragrance_description.zh.substring(0, 100)}...`
-    : `My Fragrance Profile | ScentMind\n\nFragrance Notes:\nTop: ${result.fragrance_notes.topNotes.join(", ")}\nHeart: ${result.fragrance_notes.middleNotes.join(", ")}\nBase: ${result.fragrance_notes.baseNotes.join(", ")}\n\nRecommended Scents: ${result.scent_preference.join(", ")}\nOccasion: ${result.occasion}\nConcentration: ${result.concentration}\n\n${result.fragrance_description.en.substring(0, 100)}...`
+    : `My Fragrance Profile | ScentMind\n\nFragrance Notes:\nTop: ${result.fragrance_notes.topNotes.join(", ")}\nHeart: ${result.fragrance_notes.middleNotes.join(", ")}\nBase: ${result.fragrance_notes.baseNotes.join(", ")}\n\nRecommended Scents: ${result.scent_preference.join(", ")}\nOccasion: ${result.occasion}\nConcentration: ${result.concentration}\n\n${(result.fragrance_description.en ?? result.fragrance_description.zh).substring(0, 100)}...`
 
   const handleCopy = async () => {
     await navigator.clipboard.writeText(shareText)
