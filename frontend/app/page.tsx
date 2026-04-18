@@ -12,6 +12,7 @@ import { RecommendationResult } from "@/components/recommendation-result"
 import { Button } from "@/components/ui/button"
 import { Spinner } from "@/components/ui/spinner"
 import { useLanguage } from "@/lib/language-context"
+import { generatePerfumeViaAPI } from "@/lib/api"
 import type {
   UserPreferences,
   BiometricData,
@@ -258,11 +259,18 @@ export default function Home() {
   const handleNext = async () => {
     if (currentStep === 2) {
       setIsGenerating(true)
-      await new Promise((resolve) => setTimeout(resolve, 1500))
-      const recommendation = generateRecommendation(preferences, biometrics, environment)
-      setResult(recommendation)
-      setIsGenerating(false)
-      setCurrentStep(3)
+      try {
+        const recommendation = await generatePerfumeViaAPI(preferences, biometrics, environment)
+        setResult(recommendation)
+        setCurrentStep(3)
+      } catch (error) {
+        console.error("[API] 后端调用失败，降级为本地生成:", error)
+        const recommendation = generateRecommendation(preferences, biometrics, environment)
+        setResult(recommendation)
+        setCurrentStep(3)
+      } finally {
+        setIsGenerating(false)
+      }
     } else {
       setCurrentStep((prev) => Math.min(prev + 1, STEPS.length - 1))
     }
