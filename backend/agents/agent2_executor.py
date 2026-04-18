@@ -1,14 +1,10 @@
 """
 Agent 2: 执行器智能体 (Executor Agent)
 
-职责：
-  - 接收 Agent1Output（偏好画像 + 环境上下文 + 关键词）
-  - 从数据库按香调族群查询精油候选集
-  - 纯规则计算前/中/后调配比（前调30-40%，中调30-40%，后调20-30%）
-  - 根据环境系数调整最终浓度和用量
-  - 估算配方成本
-  - 调用 GLM 生成气味描述文案和选择理由
-  - 返回 FinalOutput
+三步流程：
+  Step 1 _select_oils          按香调族群 + 扩散半径 + 成本系数 + 持久度从数据库筛选
+  Step 2 _calculate_proportions 固定前40% / 中35% / 后25%，层内按油数均分
+  Step 3 _generate_description  把实际精油的扩散距离/留香时长注入 prompt，调用 GLM 生成文案
 """
 
 from __future__ import annotations
@@ -32,47 +28,45 @@ from database.schemas import (
 
 logger = logging.getLogger(__name__)
 
-# ── 配比区间常量 ────────────────────────────────────────────────
-_TOP_RANGE    = (0.30, 0.40)   # 前调占总量比例
-_MIDDLE_RANGE = (0.30, 0.40)   # 中调
-_BASE_RANGE   = (0.20, 0.30)   # 后调
+# ── 层级固定占比 ────────────────────────────────────────────────
+_TOP_PCT    = 0.40   # 前调 40%
+_MIDDLE_PCT = 0.35   # 中调 35%
+_BASE_PCT   = 0.25   # 后调 25%
 
-# 每个层级最多选取几种原料
 _MAX_OILS_PER_NOTE = 3
 
-# 浓度类型 → 香精占比 (%)
-_CONCENTRATION_MAP = {
+# ── sillage → 扩散半径范围 (cm) ────────────────────────────────
+_SILLAGE_CM = {
+    "贴身":    (0,   15),
+    "近距离":  (15,  30),
+    "中等扩散": (30, 100),
+    "强扩散":  (100, 999),
+}
+
+# ── budget_level → 最大成本系数 ────────────────────────────────
+_BUDGET_COST_COEF = {
+    "经济": 1.0,
+    "中档": 2.0,
+    "高档": 5.0,
+    "奢华": 999.0,
+}
+
+# ── longevity → 持久度小时范围（用于中调筛选）──────────────────
+_LONGEVITY_HOURS = {
+    "2小时以内": (0,  2),
+    "2-4小时":   (2,  4),
+    "4-6小时":   (4,  6),
+    "6小时以上": (6, 99),
+}
+
+# ── concentration → 香精占比 (%) ───────────────────────────────
+_CONCENTRATION_PCT = {
     "淡香水": 8.0,
     "香水":   15.0,
     "浓香水": 20.0,
     "香精":   28.0,
 }
 
-# 留香时长 → 小时数（取区间中值）
-_LONGEVITY_MAP = {
-    "2小时以内": 1.5,
-    "2-4小时":   3.0,
-    "4-6小时":   5.0,
-    "6小时以上": 7.0,
-}
-
-# 扩散范围 → 距离描述
-_SILLAGE_DISTANCE_MAP = {
-    "贴身":   "约 10 cm 以内",
-    "近距离": "约 30 cm",
-    "中等扩散": "约 60-100 cm",
-    "强扩散": "约 100 cm 以上",
-}
-
-# 预算等级 → 每毫升成本区间（元）
-_BUDGET_COST_MAP = {
-    "经济": (0.5, 2.0),
-    "中档": (2.0, 8.0),
-    "高档": (8.0, 25.0),
-    "奢华": (25.0, 80.0),
-}
-
-# 标准调配总量（ml）
 _DEFAULT_VOLUME_ML = 10.0
 
 
@@ -94,49 +88,48 @@ class Agent2Executor:
         """
         主执行方法
 
-        Args:
-            agent1_output: Agent1 输出的偏好画像 + 环境上下文 + 关键词
-
-        Returns:
-            FinalOutput：完整配方 + 描述文案 + 规格参数
+        Step 1: 按多维度条件筛选精油
+        Step 2: 计算前/中/后调配比
+        Step 3: 调用 GLM 生成描述文案
         """
         profile = agent1_output.preference_profile
         env     = agent1_output.environmental_context
 
         logger.info(
-            "[Agent2] 开始执行 | 香调=%s 浓度=%s 扩散=%s 场合=%s",
-            profile.scent_families, profile.concentration,
-            profile.sillage, env.occasion,
+            "[Agent2] 开始执行 | 香调=%s 扩散=%s 预算=%s 留香=%s",
+            profile.scent_families, profile.sillage,
+            profile.budget_level, profile.longevity,
         )
 
-        # Step 1：从数据库查询候选精油
-        top_candidates, mid_candidates, base_candidates = self._select_oils(
-            agent1_output.scent_keywords,
-            profile.scent_families,
-            profile.avoided_notes,
+        # Step 1：多维度筛选精油
+        top_oils, mid_oils, base_oils = self._select_oils(
+            scent_families=profile.scent_families,
+            avoided_notes=profile.avoided_notes,
+            sillage=profile.sillage,
+            budget_level=profile.budget_level,
+            longevity=profile.longevity,
         )
 
-        # Step 2：计算前/中/后调配比
+        # Step 2：计算配比
         top_notes, mid_notes, base_notes = self._calculate_proportions(
-            top_candidates, mid_candidates, base_candidates
+            top_oils, mid_oils, base_oils
         )
 
-        # Step 3：计算规格参数（浓度、留香、扩散距离、成本）
-        specs = self._calculate_specifications(profile, env, top_notes, mid_notes, base_notes)
+        # Step 3：计算规格参数
+        specs = self._calculate_specifications(profile, env)
 
-        # Step 4：调用 GLM 生成描述文案和选择理由
+        # Step 4：调用 GLM 生成文案（把真实精油参数注入 prompt）
         description, rationale = self._generate_description(
-            agent1_output, top_notes, mid_notes, base_notes, specs
-        )
-
-        formula = PerfumeFormula(
-            top_notes=top_notes,
-            middle_notes=mid_notes,
-            base_notes=base_notes,
+            agent1_output, top_oils, mid_oils, base_oils,
+            top_notes, mid_notes, base_notes, specs,
         )
 
         output = FinalOutput(
-            formula=formula,
+            formula=PerfumeFormula(
+                top_notes=top_notes,
+                middle_notes=mid_notes,
+                base_notes=base_notes,
+            ),
             scent_description=description,
             selection_rationale=rationale,
             volume_ml=specs["volume_ml"],
@@ -145,202 +138,247 @@ class Agent2Executor:
         )
 
         logger.info(
-            "[Agent2] 执行完成 | 浓度=%.1f%% 留香=%.1fh 成本估算=%.1f元",
+            "[Agent2] 执行完成 | 浓度=%.1f%% 留香=%.1fh 成本=%.1f元",
             specs["concentration_pct"], specs["longevity_hours"], specs["estimated_cost"],
         )
         return output
 
-    # ── 私有方法：油脂选取 ──────────────────────────────────────
+    # ── Step 1：精油筛选 ────────────────────────────────────────
 
     def _select_oils(
         self,
-        scent_keywords: list[str],
         scent_families: list[str],
         avoided_notes: list[str],
+        sillage: str,
+        budget_level: str,
+        longevity: str,
     ) -> tuple[list[dict], list[dict], list[dict]]:
         """
-        从数据库分别查询前/中/后调候选精油
-
-        策略：
-          1. 先用 scent_keywords 查询，尽量精准匹配
-          2. 结果不足时用 scent_families 补充
-          3. 过滤掉 avoided_notes 中的香调
+        按四个维度过滤精油：
+          1. 香调族群匹配（scent_families）
+          2. 扩散半径在 sillage 对应的 cm 范围内
+          3. 成本系数 <= budget_level 对应上限
+          4. 中调持久度在 longevity 对应的小时范围内（仅对中调生效）
         """
-        def _filter_avoided(records: list[dict]) -> list[dict]:
+        # 全量原料
+        all_oils = self.db.get_all_ingredients()
+        if not all_oils:
+            logger.warning("[Agent2] 原料库为空，返回空配方")
+            return [], [], []
+
+        cm_lo,  cm_hi  = _SILLAGE_CM.get(sillage, (0, 999))
+        max_cost       = _BUDGET_COST_COEF.get(budget_level, 2.0)
+        lon_lo, lon_hi = _LONGEVITY_HOURS.get(longevity, (0, 99))
+
+        def _val(row: dict, *keys, default=None):
+            """按优先级取第一个有值的字段"""
+            for k in keys:
+                v = row.get(k)
+                if v is not None:
+                    return v
+            return default
+
+        def _match_family(row: dict) -> bool:
+            family = str(_val(row, "scent_family", "香调族群", "scent_type", default=""))
+            return any(f.lower() in family.lower() for f in scent_families)
+
+        def _not_avoided(row: dict) -> bool:
             if not avoided_notes:
-                return records
-            result = []
-            for r in records:
-                family = str(r.get("scent_family") or r.get("香调族群") or "")
-                name   = str(r.get("name") or r.get("名称") or "")
-                if not any(av.lower() in family.lower() or av.lower() in name.lower()
-                           for av in avoided_notes):
-                    result.append(r)
-            return result
+                return True
+            family = str(_val(row, "scent_family", "香调族群", default=""))
+            name   = str(_val(row, "name", "名称", default=""))
+            return not any(av.lower() in family.lower() or av.lower() in name.lower()
+                           for av in avoided_notes)
 
-        def _query_with_fallback(note_type: str) -> list[dict]:
-            # 先用关键词查
-            results = self.db.query_oils_by_scent_family(scent_keywords, note_type=note_type)
-            if len(results) < _MAX_OILS_PER_NOTE:
-                # 不够则用香调族群补
-                extra = self.db.query_oils_by_scent_family(scent_families, note_type=note_type)
-                seen_ids = {r.get("id") for r in results}
-                for r in extra:
-                    if r.get("id") not in seen_ids:
-                        results.append(r)
-            results = _filter_avoided(results)
-            # 随机取 MAX_OILS_PER_NOTE 条，增加多样性
-            random.shuffle(results)
-            return results[:_MAX_OILS_PER_NOTE]
+        def _in_diffusion(row: dict) -> bool:
+            raw = _val(row, "diffusion_cm", "扩散半径", "diffusion_distance")
+            if raw is None:
+                return True   # 无数据时不过滤
+            try:
+                return cm_lo <= float(raw) <= cm_hi
+            except (ValueError, TypeError):
+                return True
 
-        top_candidates  = _query_with_fallback("前调")
-        mid_candidates  = _query_with_fallback("中调")
-        base_candidates = _query_with_fallback("后调")
+        def _under_cost(row: dict) -> bool:
+            raw = _val(row, "cost_coefficient", "成本系数")
+            if raw is None:
+                return True
+            try:
+                return float(raw) <= max_cost
+            except (ValueError, TypeError):
+                return True
+
+        def _longevity_ok(row: dict) -> bool:
+            """仅对中调生效：持久度在目标范围内"""
+            raw = _val(row, "longevity_hours", "持久度", "middle_longevity_hours")
+            if raw is None:
+                return True
+            try:
+                return lon_lo <= float(raw) <= lon_hi
+            except (ValueError, TypeError):
+                return True
+
+        def _note_type(row: dict) -> str:
+            return str(_val(row, "note_type", "调性", "category", default=""))
+
+        # 基础过滤：香调 + 排除 + 扩散 + 成本
+        base_pool = [r for r in all_oils
+                     if _match_family(r) and _not_avoided(r)
+                     and _in_diffusion(r) and _under_cost(r)]
+
+        # 按调性分桶
+        top_pool  = [r for r in base_pool if "前调" in _note_type(r)]
+        # 中调额外过滤持久度
+        mid_pool  = [r for r in base_pool if "中调" in _note_type(r) and _longevity_ok(r)]
+        base_pool_ = [r for r in base_pool if "后调" in _note_type(r)]
+
+        def _pick(pool: list[dict], n: int) -> list[dict]:
+            if not pool:
+                return []
+            random.shuffle(pool)
+            return pool[:n]
+
+        top_oils  = _pick(top_pool,   _MAX_OILS_PER_NOTE)
+        mid_oils  = _pick(mid_pool,   _MAX_OILS_PER_NOTE)
+        base_oils = _pick(base_pool_, _MAX_OILS_PER_NOTE)
 
         logger.debug(
-            "[Agent2] 候选精油 | 前调=%d 中调=%d 后调=%d",
-            len(top_candidates), len(mid_candidates), len(base_candidates),
+            "[Agent2] 筛选结果 | 前调=%d 中调=%d 后调=%d（池: %d/%d/%d）",
+            len(top_oils), len(mid_oils), len(base_oils),
+            len(top_pool), len(mid_pool), len(base_pool_),
         )
-        return top_candidates, mid_candidates, base_candidates
+        return top_oils, mid_oils, base_oils
 
-    # ── 私有方法：配比计算 ──────────────────────────────────────
+    # ── Step 2：配比计算 ────────────────────────────────────────
 
     def _calculate_proportions(
         self,
-        top_candidates: list[dict],
-        mid_candidates: list[dict],
-        base_candidates: list[dict],
+        top_oils: list[dict],
+        mid_oils: list[dict],
+        base_oils: list[dict],
     ) -> tuple[list[FormulaNote], list[FormulaNote], list[FormulaNote]]:
         """
-        将候选精油列表转换为带百分比的 FormulaNote 列表
-
-        配比规则：
-          - 各层级总占比：前调 30-40%，中调 30-40%，后调 20-30%（三者之和 = 100%）
-          - 同层级内各精油按均匀分配（可扩展为按强度加权）
+        固定层级占比：前调40% / 中调35% / 后调25%
+        同层级内各精油均分
         """
-        # 确定三个层级的总占比（随机在范围内取，保证合计=100）
-        top_total    = round(random.uniform(*_TOP_RANGE), 2)
-        base_total   = round(random.uniform(*_BASE_RANGE), 2)
-        middle_total = round(1.0 - top_total - base_total, 2)
-        middle_total = max(_MIDDLE_RANGE[0], min(_MIDDLE_RANGE[1], middle_total))
-
-        def _split_evenly(candidates: list[dict], layer_total: float,
-                          diffusion: str) -> list[FormulaNote]:
-            if not candidates:
+        def _build_notes(oils: list[dict], layer_pct: float,
+                         default_diffusion: str) -> list[FormulaNote]:
+            if not oils:
                 return []
-            each = round(100 * layer_total / len(candidates), 1)
+            each_pct = round(layer_pct * 100 / len(oils), 1)
             notes = []
-            for oil in candidates:
+            for oil in oils:
                 name = (oil.get("name_cn") or oil.get("名称")
                         or oil.get("name") or "未知原料")
+                # 优先使用数据库中的扩散距离分级
+                raw_diff = oil.get("diffusion_level") or oil.get("扩散等级")
+                diffusion = str(raw_diff) if raw_diff else default_diffusion
+                if diffusion not in ("贴身", "近距离", "中等", "强扩散"):
+                    diffusion = default_diffusion
                 notes.append(FormulaNote(
                     name=name,
-                    percentage=each,
+                    percentage=each_pct,
                     diffusion_distance=diffusion,
                     ingredient_id=oil.get("id"),
                 ))
             return notes
 
-        top_notes  = _split_evenly(top_candidates,  top_total,    "近距离")
-        mid_notes  = _split_evenly(mid_candidates,  middle_total, "中等")
-        base_notes = _split_evenly(base_candidates, base_total,   "贴身")
+        top_notes  = _build_notes(top_oils,  _TOP_PCT,    "近距离")
+        mid_notes  = _build_notes(mid_oils,  _MIDDLE_PCT, "中等")
+        base_notes = _build_notes(base_oils, _BASE_PCT,   "贴身")
 
         logger.debug(
             "[Agent2] 配比 | 前调=%.0f%% 中调=%.0f%% 后调=%.0f%%",
-            top_total * 100, middle_total * 100, base_total * 100,
+            _TOP_PCT * 100, _MIDDLE_PCT * 100, _BASE_PCT * 100,
         )
         return top_notes, mid_notes, base_notes
 
-    # ── 私有方法：规格计算 ──────────────────────────────────────
+    # ── Step 3：规格计算 ────────────────────────────────────────
 
     def _calculate_specifications(
         self,
         profile: Any,
         env: Any,
-        top_notes: list[FormulaNote],
-        mid_notes: list[FormulaNote],
-        base_notes: list[FormulaNote],
     ) -> dict[str, Any]:
-        """
-        计算香水规格参数：
-          - concentration_pct：香精浓度（%），受环境系数微调
-          - volume_ml：建议调配总量
-          - longevity_hours：预估留香时长
-          - diffusion_distance：扩散距离描述
-          - estimated_cost：成本估算（元）
-        """
-        # 基础浓度
-        base_conc = _CONCENTRATION_MAP.get(profile.concentration, 15.0)
-        # 环境系数影响浓度（高温高湿降低，寒冷干燥提高）
+        """计算浓度、留香、成本"""
+        base_conc = _CONCENTRATION_PCT.get(profile.concentration, 15.0)
         adj_conc  = round(base_conc * env.environmental_coefficient, 1)
-        adj_conc  = max(5.0, min(35.0, adj_conc))   # 硬性上下限
+        adj_conc  = max(5.0, min(35.0, adj_conc))
 
-        # 留香时长：基础值 × 环境系数的倒数（环境系数高 → 挥发快 → 留香短）
-        base_longevity = _LONGEVITY_MAP.get(profile.longevity, 3.0)
+        lon_lo, lon_hi = _LONGEVITY_HOURS.get(profile.longevity, (2, 4))
+        base_longevity = (lon_lo + lon_hi) / 2
         adj_longevity  = round(base_longevity / env.environmental_coefficient, 1)
         adj_longevity  = max(0.5, min(12.0, adj_longevity))
 
-        # 调配总量（固定默认值，后续可扩展为用户自选）
-        volume_ml = _DEFAULT_VOLUME_ML
-
-        # 扩散距离
-        diffusion_distance = _SILLAGE_DISTANCE_MAP.get(profile.sillage, "约 30 cm")
-
-        # 成本估算：精油总用量 × 每毫升价格区间中值
-        lo, hi = _BUDGET_COST_MAP.get(profile.budget_level, (2.0, 8.0))
-        price_per_ml     = (lo + hi) / 2
-        oil_volume_ml    = volume_ml * adj_conc / 100
-        estimated_cost   = round(oil_volume_ml * price_per_ml, 1)
+        max_cost     = _BUDGET_COST_COEF.get(profile.budget_level, 2.0)
+        oil_ml       = _DEFAULT_VOLUME_ML * adj_conc / 100
+        # 成本估算：精油用量 × 成本系数上限作为单价参考
+        estimated_cost = round(oil_ml * max_cost, 1)
 
         return {
             "concentration_pct":  adj_conc,
-            "volume_ml":          volume_ml,
+            "volume_ml":          _DEFAULT_VOLUME_ML,
             "longevity_hours":    adj_longevity,
-            "diffusion_distance": diffusion_distance,
+            "diffusion_distance": f"{_SILLAGE_CM.get(profile.sillage, (0,30))[0]}-{_SILLAGE_CM.get(profile.sillage, (0,30))[1]} cm",
             "estimated_cost":     estimated_cost,
         }
 
-    # ── 私有方法：GLM 生成描述 ──────────────────────────────────
+    # ── Step 4：GLM 文案生成 ────────────────────────────────────
 
     def _generate_description(
         self,
         agent1_output: Agent1Output,
+        top_oils: list[dict],
+        mid_oils: list[dict],
+        base_oils: list[dict],
         top_notes: list[FormulaNote],
         mid_notes: list[FormulaNote],
         base_notes: list[FormulaNote],
         specs: dict[str, Any],
     ) -> tuple[str, str]:
         """
-        调用 GLM 生成面向用户的气味描述文案和配方选择理由
-
-        Returns:
-            (scent_description, selection_rationale)
+        将真实精油的扩散距离和留香时长注入 prompt，
+        让 GLM 生成有数据支撑的文案
         """
         profile = agent1_output.preference_profile
         env     = agent1_output.environmental_context
 
-        def _note_names(notes: list[FormulaNote]) -> str:
-            return "、".join(n.name for n in notes) if notes else "无"
+        def _oil_detail(notes: list[FormulaNote], oils: list[dict]) -> str:
+            lines = []
+            for note, oil in zip(notes, oils):
+                diff_cm  = oil.get("diffusion_cm") or oil.get("扩散半径") or "—"
+                longevity = oil.get("longevity_hours") or oil.get("持久度") or "—"
+                lines.append(
+                    f"  {note.name} {note.percentage}%"
+                    f"（扩散 {diff_cm} cm，留香 {longevity} h）"
+                )
+            return "\n".join(lines) if lines else "  无"
+
+        top_detail  = _oil_detail(top_notes,  top_oils)
+        mid_detail  = _oil_detail(mid_notes,  mid_oils)
+        base_detail = _oil_detail(base_notes, base_oils)
 
         prompt = f"""你是一位诗意的香水文案师，同时也是专业调香顾问。
 
-## 香水配方
-- 前调（{_note_names(top_notes)}）：最先散发，持续约 15-30 分钟
-- 中调（{_note_names(mid_notes)}）：香水核心，持续约 2-4 小时
-- 后调（{_note_names(base_notes)}）：温柔尾韵，持续约 {specs['longevity_hours']:.0f} 小时
+已选定的香油配方：
+- 前调（最先散发，15-30分钟）：
+{top_detail}
+- 中调（香水核心，2-4小时）：
+{mid_detail}
+- 后调（持久尾韵）：
+{base_detail}
 
-## 用户画像
+用户需求：
 - 场合：{env.occasion}，时段：{env.time_of_day}，季节：{env.season}
-- 扩散范围：{profile.sillage}（{specs['diffusion_distance']}）
 - 浓度：{profile.concentration}（香精占比 {specs['concentration_pct']:.1f}%）
-- 体温状态：{profile.body_temp_influence}
-- 活动状态：{profile.activity_influence}
+- 扩散：{profile.sillage}（{specs['diffusion_distance']}）
 - 天气：{env.temperature_range}，{env.humidity_range}
+- 体温：{profile.body_temp_influence}
+- 活动：{profile.activity_influence}
 
-## 任务
-请生成两段文字，以 JSON 格式返回：
-1. scent_description：生动描述这款香水的气味层次和整体感受，150字以内，有画面感
-2. selection_rationale：简述为何这个配方契合用户当前的生理状态、环境和场合，100字以内
+请生成：
+1. scent_description（150字以内，有画面感，描述香气层次和整体感受）
+2. selection_rationale（100字以内，说明为何这个配方适合用户当前的场合和状态）
 
 只返回 JSON，格式：
 {{"scent_description": "...", "selection_rationale": "..."}}"""
@@ -349,17 +387,19 @@ class Agent2Executor:
             resp = self.llm.chat.completions.create(
                 model=self.MODEL,
                 messages=[{"role": "user", "content": prompt}],
-                temperature=0.7,   # 描述文案允许更有创意
+                temperature=0.7,
                 max_tokens=512,
             )
-            raw = resp.choices[0].message.content.strip()
+            raw  = resp.choices[0].message.content.strip()
             data = self._parse_json(raw)
             description = data.get("scent_description", "一款为您专属调配的香水。")
             rationale   = data.get("selection_rationale", "根据您的偏好和当前环境精心调配。")
-
         except Exception as exc:
-            logger.warning("[Agent2] GLM 描述生成失败：%s，使用默认文案", exc)
-            description = f"以{_note_names(top_notes)}为前调，{_note_names(mid_notes)}为核心，{_note_names(base_notes)}收尾的专属香水。"
+            logger.warning("[Agent2] GLM 文案生成失败：%s，使用兜底文案", exc)
+            top_names  = "、".join(n.name for n in top_notes)  or "无"
+            mid_names  = "、".join(n.name for n in mid_notes)  or "无"
+            base_names = "、".join(n.name for n in base_notes) or "无"
+            description = f"以{top_names}为前调，{mid_names}为核心，{base_names}收尾的专属香水。"
             rationale   = f"针对{env.occasion}场合，结合{env.season}季{env.temperature_range}天气精心调配。"
 
         return description, rationale
@@ -368,7 +408,7 @@ class Agent2Executor:
 
     @staticmethod
     def _parse_json(text: str) -> dict[str, Any]:
-        """从模型返回文本中提取 JSON，兼容前后附加说明的情况"""
+        """从模型返回文本中提取 JSON，兼容前后附加说明"""
         try:
             return json.loads(text)
         except json.JSONDecodeError:
