@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: custom-fragrance-api
+    runtime: python
+    repo: https://github.com/bvlsu1701crypto/Custom-Fragrance
+    branch: backend
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: DEEPSEEK_API_KEY
+        sync: false          # 在 Render 控制台手动填入，不写入文件
+      - key: DEEPSEEK_BASE_URL
+        value: https://api.deepseek.com
+      - key: DATABASE_PATH
+        value: database/data
+      - key: DEBUG
+        value: "False"
+      - key: ALLOWED_ORIGINS
+        value: http://localhost:3000  # 部署后在控制台改为 Vercel 域名
+    healthCheckPath: /api/health
