@@ -337,8 +337,8 @@ class Agent2Executor:
         specs: dict[str, Any],
     ) -> tuple[str, str]:
         """
-        将真实精油的扩散距离和留香时长注入 prompt，
-        让 GLM 生成有数据支撑的文案
+        将真实精油参数（扩散距离/留香时长）和 selection_basis 注入 prompt，
+        调用 GLM 生成有画面感的文案和专业选择理由
         """
         profile = agent1_output.preference_profile
         env     = agent1_output.environmental_context
@@ -346,41 +346,67 @@ class Agent2Executor:
         def _oil_detail(notes: list[FormulaNote], oils: list[dict]) -> str:
             lines = []
             for note, oil in zip(notes, oils):
-                diff_cm  = oil.get("diffusion_cm") or oil.get("扩散半径") or "—"
-                longevity = oil.get("longevity_hours") or oil.get("持久度") or "—"
+                diff_cm  = oil.get("diffusion_cm")   or oil.get("扩散半径")   or "—"
+                lon_h    = oil.get("longevity_hours") or oil.get("持久度")    or "—"
                 lines.append(
                     f"  {note.name} {note.percentage}%"
-                    f"（扩散 {diff_cm} cm，留香 {longevity} h）"
+                    f"（扩散半径 {diff_cm} cm，留香 {lon_h} h）"
                 )
             return "\n".join(lines) if lines else "  无"
 
-        top_detail  = _oil_detail(top_notes,  top_oils)
-        mid_detail  = _oil_detail(mid_notes,  mid_oils)
-        base_detail = _oil_detail(base_notes, base_oils)
+        top_detail    = _oil_detail(top_notes,  top_oils)
+        mid_detail    = _oil_detail(mid_notes,  mid_oils)
+        base_detail   = _oil_detail(base_notes, base_oils)
+        selection_basis = self._build_selection_basis(profile, env, specs)
 
         prompt = f"""你是一位诗意的香水文案师，同时也是专业调香顾问。
 
-已选定的香油配方：
-- 前调（最先散发，15-30分钟）：
+## 已选定的香油配方
+
+### 前调（持续约 15-30 分钟）
 {top_detail}
-- 中调（香水核心，2-4小时）：
+
+### 中调（持续约 2-4 小时）
 {mid_detail}
-- 后调（持久尾韵）：
+
+### 后调（持续约 {specs['longevity_hours']:.0f} 小时）
 {base_detail}
 
-用户需求：
-- 场合：{env.occasion}，时段：{env.time_of_day}，季节：{env.season}
-- 浓度：{profile.concentration}（香精占比 {specs['concentration_pct']:.1f}%）
-- 扩散：{profile.sillage}（{specs['diffusion_distance']}）
-- 天气：{env.temperature_range}，{env.humidity_range}
-- 体温：{profile.body_temp_influence}
-- 活动：{profile.activity_influence}
+## 用户需求画像
 
-请生成：
-1. scent_description（150字以内，有画面感，描述香气层次和整体感受）
-2. selection_rationale（100字以内，说明为何这个配方适合用户当前的场合和状态）
+- 使用场合：{env.occasion}
+- 使用时段：{env.time_of_day}
+- 季节：{env.season}
+- 扩散范围：{profile.sillage}（物理距离约 {specs['diffusion_distance']}）
+- 香水浓度：{profile.concentration}（香精占比 {specs['concentration_pct']:.1f}%）
+- 预算等级：{profile.budget_level}
 
-只返回 JSON，格式：
+## 生理与环境状态
+
+- 体温状态：{profile.body_temp_influence}
+- 活动强度：{profile.activity_influence}
+- 天气环境：{env.temperature_range}，{env.humidity_range}
+
+## 配方选择依据
+
+{selection_basis}
+
+## 任务
+
+请生成两段文字，以 JSON 格式返回：
+
+1. **scent_description**（150字以内）
+   - 生动描述这款香水的气味层次和整体感受
+   - 要有画面感和情境感
+   - 从前调到后调的演变过程
+   - 使用诗意但不夸张的语言
+
+2. **selection_rationale**（100字以内）
+   - 简述为何这个配方契合用户当前的生理状态、环境和场合
+   - 说明香油选择的科学依据
+   - 专业但易懂
+
+**只返回 JSON，格式：**
 {{"scent_description": "...", "selection_rationale": "..."}}"""
 
         try:
@@ -403,6 +429,45 @@ class Agent2Executor:
             rationale   = f"针对{env.occasion}场合，结合{env.season}季{env.temperature_range}天气精心调配。"
 
         return description, rationale
+
+    def _build_selection_basis(
+        self,
+        profile: Any,
+        env: Any,
+        specs: dict[str, Any],
+    ) -> str:
+        """生成配方选择依据说明，注入 Agent2 prompt"""
+        parts = []
+
+        # 扩散范围依据
+        parts.append(
+            f"根据{profile.sillage}需求，选择扩散范围 {specs['diffusion_distance']} 的香油"
+        )
+
+        # 香调依据
+        if profile.scent_families:
+            parts.append(
+                f"根据偏好香调（{'、'.join(profile.scent_families)}），"
+                f"匹配同类香调族群的精油"
+            )
+
+        # 季节/天气依据
+        parts.append(
+            f"根据{env.season}季{env.temperature_range}天气，"
+            f"{'选择清新香调以适应高温高湿' if '炎热' in env.temperature_range or '潮湿' in env.humidity_range else '选择适合当前气候的香调'}"
+        )
+
+        # 场合依据
+        occasion_map = {
+            "职场":   "职场场合要求扩散克制，避免强烈香调影响他人",
+            "约会":   "约会场合可适度提升扩散，增加个人魅力",
+            "运动":   "运动场合推荐清爽淡香，避免与汗味混合",
+            "正式场合": "正式场合以低调优雅为主，扩散不超过近距离",
+        }
+        if env.occasion in occasion_map:
+            parts.append(occasion_map[env.occasion])
+
+        return "；".join(parts) + "。"
 
     # ── 工具方法 ────────────────────────────────────────────────
 

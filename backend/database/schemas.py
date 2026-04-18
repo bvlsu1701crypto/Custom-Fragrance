@@ -138,6 +138,10 @@ class Agent1Input(BaseModel):
     整合 Apple Watch 生理/位置数据 + 问卷回答 + 天气（由系统根据位置自动获取）
     """
 
+    user_text: Optional[str] = Field(
+        default="",
+        description="用户自由输入的文字描述，优先级最高，可为空",
+    )
     watch_data: AppleWatchData = Field(
         description="Apple Watch 采集的体温、位置、心率、活动强度"
     )
