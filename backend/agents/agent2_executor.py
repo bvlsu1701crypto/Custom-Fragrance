@@ -82,7 +82,7 @@ class Agent2Executor:
     将 Agent1 的偏好画像转化为具体的香水配方和文案
     """
 
-    MODEL = "glm-4-flash"
+    MODEL = "GLM-5.1"
 
     def __init__(self) -> None:
         self.db  = DatabaseManager.get_instance(settings.DATABASE_PATH)

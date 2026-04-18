@@ -62,7 +62,7 @@ class Agent1Analyzer:
     综合问卷答案和 Apple Watch 生理数据，通过 GLM-5.1 生成偏好画像
     """
 
-    MODEL = "glm-4-flash"  # 智谱 AI 模型名称
+    MODEL = "GLM-5.1"  # 智谱 AI 模型名称
 
     def __init__(self) -> None:
         self.client = ZhipuAI(api_key=settings.ZHIPU_API_KEY)
