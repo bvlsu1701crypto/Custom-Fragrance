@@ -264,7 +264,17 @@ class Agent2Executor:
             if not avoided_notes:
                 return True
             text = _row_text(row)
-            return not any(av and av in text for av in avoided_notes)
+            for av in avoided_notes:
+                if not av:
+                    continue
+                # 直接字符串匹配
+                if av in text:
+                    return False
+                # 用香调族群关键词匹配（如 "柑橘" → 柑/橘/柠檬/佛手...）
+                kws = _FAMILY_KEYWORDS.get(av, ())
+                if any(kw in text for kw in kws):
+                    return False
+            return True
 
         def _match_family(row: dict) -> bool:
             if not family_kws:
