@@ -28,10 +28,25 @@ from database.schemas import (
 
 logger = logging.getLogger(__name__)
 
-# ── 层级固定占比 ────────────────────────────────────────────────
-_TOP_PCT    = 0.40   # 前调 40%
-_MIDDLE_PCT = 0.35   # 中调 35%
-_BASE_PCT   = 0.25   # 后调 25%
+# ── 层级占比：由 concentration 动态决定 ─────────────────────────
+# concentration → (top, middle, base)
+_LAYER_RATIOS: dict[str, tuple[float, float, float]] = {
+    "淡香水": (0.50, 0.30, 0.20),   # EDT：前调突出、快进快出
+    "香水":   (0.40, 0.35, 0.25),   # EDP：均衡
+    "浓香水": (0.35, 0.35, 0.30),   # 中后稳重
+    "香精":   (0.30, 0.30, 0.40),   # Extrait：后调厚重
+}
+_DEFAULT_LAYER_RATIOS = (0.40, 0.35, 0.25)
+
+# ── 层内原料权重：priority × intensity ─────────────────────────
+_PRIORITY_WEIGHT = {"A": 1.2, "B": 1.0, "C": 0.8}
+_INTENSITY_WEIGHT = {
+    "高影响": 1.4,
+    "高":     1.3,
+    "中高":   1.15,
+    "中":     1.0,
+    "功能料": 1.0,
+}
 
 _MAX_OILS_PER_NOTE = 3
 
@@ -117,6 +132,15 @@ def _expand_avoided(avoided: list[str]) -> set[str]:
     return expanded
 
 
+def _oil_weight(oil: dict) -> float:
+    """按 priority × intensity 计算原料的相对权重；未知值按 1.0。"""
+    p_raw = oil.get("priority")
+    i_raw = oil.get("intensity")
+    p = _PRIORITY_WEIGHT.get(str(p_raw) if p_raw else "", 1.0)
+    i = _INTENSITY_WEIGHT.get(str(i_raw) if i_raw else "", 1.0)
+    return p * i
+
+
 def _row_text(row: dict) -> str:
     """拼接一条原料的所有可匹配文本字段（忽略 NaN）"""
     parts = []
@@ -170,9 +194,9 @@ class Agent2Executor:
             avoided_notes=profile.avoided_notes,
         )
 
-        # Step 2：计算配比
+        # Step 2：计算配比（层比由 concentration 驱动，层内按权重分配）
         top_notes, mid_notes, base_notes = self._calculate_proportions(
-            top_oils, mid_oils, base_oils
+            top_oils, mid_oils, base_oils, profile.concentration,
         )
 
         # Step 3：计算规格参数
@@ -239,6 +263,16 @@ class Agent2Executor:
         mid_oils  = self._filter_and_pick(layer_pools["中调"], scent_families, avoided_notes)
         base_oils = self._filter_and_pick(layer_pools["后调"], scent_families, avoided_notes)
 
+        # 前调空兜底：从 mid_pool / stocked 里挑高挥发性原料补上
+        if not top_oils:
+            logger.warning("[Agent2] 前调候选被 avoid 全部排除，启动跨层兜底")
+            avoided_kws = _expand_avoided(avoided_notes)
+            promoted = self._promote_to_top(layer_pools["中调"], stocked, avoided_kws)
+            if promoted:
+                top_oils = promoted
+                promoted_ids = {id(o) for o in promoted}
+                mid_oils = [m for m in mid_oils if id(m) not in promoted_ids]
+
         logger.info(
             "[Agent2] 筛选结果 | 前调=%d 中调=%d 后调=%d（层池: %d/%d/%d，定香池=%d已隐藏）",
             len(top_oils), len(mid_oils), len(base_oils),
@@ -246,6 +280,46 @@ class Agent2Executor:
             len(layer_pools["定香"]),
         )
         return top_oils, mid_oils, base_oils
+
+    @staticmethod
+    def _promote_to_top(
+        mid_pool: list[dict],
+        stocked: list[dict],
+        avoided_kws: set[str],
+    ) -> list[dict]:
+        """
+        前调池被 avoid 清空时的兜底：
+          1. 先在 mid_pool 里挑 intensity ∈ {高影响, 高} 的高挥发原料（非 avoided），最多 2 条
+          2. 不足则从 stocked 里挑 intensity 最高且非 avoided 的再补 1 条
+          3. 实在不行（rare）→ 返回空，让配方真前调缺失并由上层 log
+        """
+        def _not_avoided(row: dict) -> bool:
+            if not avoided_kws:
+                return True
+            text = _row_text(row)
+            return not any(kw in text for kw in avoided_kws)
+
+        high_volatile = {"高影响", "高"}
+
+        # 1) 从中调池挑挥发性高的
+        picked: list[dict] = [
+            r for r in mid_pool
+            if str(r.get("intensity") or "") in high_volatile and _not_avoided(r)
+        ]
+        random.shuffle(picked)
+        picked = picked[:2]
+
+        if picked:
+            return picked
+
+        # 2) 全库回退：挑一条 intensity 最高的非 avoided 原料
+        intensity_rank = {"高影响": 3, "高": 2, "中高": 1, "中": 0, "功能料": -1}
+        candidates = [r for r in stocked if _not_avoided(r)]
+        candidates.sort(
+            key=lambda r: intensity_rank.get(str(r.get("intensity") or ""), -1),
+            reverse=True,
+        )
+        return candidates[:1]
 
     @staticmethod
     def _truthy(v: Any) -> bool:
@@ -336,25 +410,31 @@ class Agent2Executor:
         top_oils: list[dict],
         mid_oils: list[dict],
         base_oils: list[dict],
+        concentration: str,
     ) -> tuple[list[FormulaNote], list[FormulaNote], list[FormulaNote]]:
         """
-        固定层级占比：前调40% / 中调35% / 后调25%
-        同层级内各精油均分
+        层间占比：由 concentration 决定（EDT→前调重、香精→后调重）
+        层内占比：按 priority × intensity 权重加权后，分配该层的整瓶占比。
+        每条 FormulaNote.percentage 是 **整瓶** 百分比；同一层加和 ≈ 层占比。
         """
-        def _build_notes(oils: list[dict], layer_pct: float,
-                         default_diffusion: str) -> list[FormulaNote]:
+        def _build_notes(
+            oils: list[dict],
+            layer_ratio: float,
+            default_diffusion: str,
+        ) -> list[FormulaNote]:
             if not oils:
                 return []
-            each_pct = round(layer_pct * 100 / len(oils), 1)
+            weights = [_oil_weight(o) for o in oils]
+            total_w = sum(weights) or 1.0
             notes = []
-            for oil in oils:
+            for oil, w in zip(oils, weights):
                 name = (oil.get("name_cn") or oil.get("名称")
                         or oil.get("name") or "未知原料")
-                # 优先使用数据库中的扩散距离分级
                 raw_diff = oil.get("diffusion_level") or oil.get("扩散等级")
                 diffusion = str(raw_diff) if raw_diff else default_diffusion
                 if diffusion not in ("贴身", "近距离", "中等", "强扩散"):
                     diffusion = default_diffusion
+                each_pct = round(layer_ratio * 100 * w / total_w, 1)
                 notes.append(FormulaNote(
                     name=name,
                     percentage=each_pct,
@@ -363,13 +443,16 @@ class Agent2Executor:
                 ))
             return notes
 
-        top_notes  = _build_notes(top_oils,  _TOP_PCT,    "近距离")
-        mid_notes  = _build_notes(mid_oils,  _MIDDLE_PCT, "中等")
-        base_notes = _build_notes(base_oils, _BASE_PCT,   "贴身")
+        top_r, mid_r, base_r = _LAYER_RATIOS.get(concentration, _DEFAULT_LAYER_RATIOS)
 
-        logger.debug(
-            "[Agent2] 配比 | 前调=%.0f%% 中调=%.0f%% 后调=%.0f%%",
-            _TOP_PCT * 100, _MIDDLE_PCT * 100, _BASE_PCT * 100,
+        top_notes  = _build_notes(top_oils,  top_r,  "近距离")
+        mid_notes  = _build_notes(mid_oils,  mid_r,  "中等")
+        base_notes = _build_notes(base_oils, base_r, "贴身")
+
+        logger.info(
+            "[Agent2] 动态配比 | concentration=%s 层比=(%.0f/%.0f/%.0f) 前调=%d条 中调=%d条 后调=%d条",
+            concentration, top_r * 100, mid_r * 100, base_r * 100,
+            len(top_notes), len(mid_notes), len(base_notes),
         )
         return top_notes, mid_notes, base_notes
 

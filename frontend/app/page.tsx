@@ -16,10 +16,10 @@ import type {
   UserPreferences,
   BiometricData,
   EnvironmentData,
-  RecommendationOutput,
 } from "@/lib/types"
 import { generatePerfume } from "@/lib/api/service"
 import { ApiError } from "@/lib/api/schemas"
+import { useRecommendation } from "@/lib/recommendation-context"
 import { toast } from "sonner"
 import { ArrowLeft, ArrowRight } from "lucide-react"
 
@@ -48,11 +48,11 @@ const initialEnvironment: EnvironmentData = {
 
 export default function Home() {
   const { language, t } = useLanguage()
-  const [currentStep, setCurrentStep] = useState(0)
+  const { result, setRecommendation, clear } = useRecommendation()
+  const [currentStep, setCurrentStep] = useState(result ? 3 : 0)
   const [preferences, setPreferences] = useState<UserPreferences>(initialPreferences)
   const [biometrics, setBiometrics] = useState<BiometricData>(initialBiometrics)
   const [environment, setEnvironment] = useState<EnvironmentData>(initialEnvironment)
-  const [result, setResult] = useState<RecommendationOutput | null>(null)
   const [isGenerating, setIsGenerating] = useState(false)
 
   const STEPS = language === "zh" ? STEPS_ZH : STEPS_EN
@@ -61,8 +61,8 @@ export default function Home() {
     if (currentStep === 2) {
       setIsGenerating(true)
       try {
-        const recommendation = await generatePerfume(preferences, biometrics, environment)
-        setResult(recommendation)
+        const { recommendation, raw } = await generatePerfume(preferences, biometrics, environment)
+        setRecommendation(recommendation, raw)
         setCurrentStep(3)
       } catch (err) {
         const message =
@@ -89,7 +89,7 @@ export default function Home() {
     setPreferences(initialPreferences)
     setBiometrics(initialBiometrics)
     setEnvironment(initialEnvironment)
-    setResult(null)
+    clear()
   }
 
   const isNextDisabled = () => {

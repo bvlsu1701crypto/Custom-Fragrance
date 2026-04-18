@@ -1,9 +1,12 @@
 "use client"
 
 import Image from "next/image"
+import Link from "next/link"
 import type { RecommendationOutput } from "@/lib/types"
 import { useLanguage } from "@/lib/language-context"
 import { ShareCard } from "@/components/share-card"
+import { Button } from "@/components/ui/button"
+import { ArrowRight } from "lucide-react"
 
 interface RecommendationResultProps {
   result: RecommendationOutput
@@ -245,6 +248,19 @@ export function RecommendationResult({ result }: RecommendationResultProps) {
             </div>
           </div>
         )}
+      </section>
+
+      {/* View Full Detail */}
+      <section className="flex justify-center">
+        <Link href="/detail">
+          <Button
+            variant="outline"
+            className="gap-2 border-foreground px-8 py-6 text-xs uppercase tracking-[0.2em] hover:bg-foreground hover:text-background"
+          >
+            {language === "zh" ? "查看完整配方详情" : "View Full Detail"}
+            <ArrowRight className="h-4 w-4" />
+          </Button>
+        </Link>
       </section>
 
       {/* Share Card */}

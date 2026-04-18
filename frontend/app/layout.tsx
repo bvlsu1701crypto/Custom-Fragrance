@@ -2,6 +2,7 @@ import type { Metadata } from 'next'
 import { DM_Sans, Playfair_Display } from 'next/font/google'
 import { Analytics } from '@vercel/analytics/next'
 import { LanguageProvider } from '@/lib/language-context'
+import { RecommendationProvider } from '@/lib/recommendation-context'
 import { Toaster } from '@/components/ui/sonner'
 import './globals.css'
 
@@ -40,8 +41,10 @@ export default function RootLayout({
     <html lang="en" className="bg-background">
       <body className={`${_dmSans.variable} ${_playfair.variable} font-sans antialiased min-h-screen`}>
         <LanguageProvider>
-          {children}
-          <Toaster richColors position="top-center" />
+          <RecommendationProvider>
+            {children}
+            <Toaster richColors position="top-center" />
+          </RecommendationProvider>
         </LanguageProvider>
         {process.env.NODE_ENV === 'production' && <Analytics />}
       </body>

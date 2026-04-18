@@ -78,6 +78,25 @@ export interface FinalOutput {
   weather_snapshot?: WeatherInfo | null
 }
 
+export interface Ingredient {
+  id: number
+  name?: string
+  name_cn?: string
+  function?: string
+  usage?: string
+  description?: string
+  caution_level?: string
+  intensity?: string
+  material_type?: string
+  priority?: string
+  in_stock?: boolean
+}
+
+export interface IngredientsResponse {
+  ingredients: Ingredient[]
+  total: number
+}
+
 export class ApiError extends Error {
   status: number
   detail: string
