@@ -18,7 +18,6 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from agents.agent1_analyzer import Agent1Analyzer
 from agents.agent2_executor import Agent2Executor
-from agents.agent3_visualizer import Agent3Visualizer
 from config.settings import settings
 from database.db_manager import DatabaseManager
 from database.schemas import Agent1Input, FinalOutput
@@ -100,9 +99,6 @@ async def generate_perfume(request: Agent1Input):
 
         executor = Agent2Executor()
         result   = executor.execute(analysis)
-
-        visualizer = Agent3Visualizer()
-        result.background_image = visualizer.generate(result)
 
         # 把本次使用的 weather 盖章到响应，供前端展示
         return result.model_copy(update={"weather_snapshot": request.weather})
