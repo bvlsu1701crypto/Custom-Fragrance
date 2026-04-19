@@ -22,6 +22,10 @@ class Settings(BaseSettings):
     DEEPSEEK_API_KEY: str
     DEEPSEEK_BASE_URL: str = "https://api.deepseek.com"
 
+    # ── 阿里云百炼文生图（可选）──────────────
+    DASHSCOPE_API_KEY: str = ""
+    DASHSCOPE_IMAGE_MODEL: str = "wan2.7-image-pro"
+
     # ── 数据库配置 ─────────────────────────────
     DATABASE_PATH: str = "database/data"
 

@@ -317,3 +317,7 @@ class FinalOutput(BaseModel):
         default_factory=list,
         description="2-3款相似市售香水推荐"
     )
+    background_image: Optional[str] = Field(
+        default=None,
+        description="Agent3 生成的香氛主题背景图（base64 编码的 JPEG）"
+    )

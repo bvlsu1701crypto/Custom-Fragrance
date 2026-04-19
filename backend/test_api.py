@@ -9,7 +9,7 @@ API 测试脚本
 import json
 import requests
 
-BASE_URL = "http://localhost:8000"
+BASE_URL = "https://custom-fragrance.onrender.com"
 
 
 def print_section(title: str):
@@ -97,6 +97,13 @@ def test_generate_perfume():
         print(f"调配量: {data.get('volume_ml')} ml")
         print(f"\n气味描述:\n{data.get('scent_description')}")
         print(f"\n选择理由:\n{data.get('selection_rationale')}")
+
+        bg = data.get("background_image")
+        if bg:
+            print(f"\n✓ Agent3 背景图生成成功（base64 长度: {len(bg)} 字符）")
+        else:
+            print("\n⚠ background_image 为空（API Key 未配置或图片生成失败）")
+
         print("\n✓ 配方生成通过")
     else:
         print(f"\n✗ 配方生成失败（HTTP {resp.status_code}）")
