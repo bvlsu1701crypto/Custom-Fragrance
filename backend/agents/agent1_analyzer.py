@@ -44,6 +44,15 @@ _ACTIVITY_RULES = {
     "剧烈运动": ("剧烈运动，出汗加速挥发，建议清爽淡香",   -2),
 }
 
+# ── 使用时段影响规则 ────────────────────────────────────────────
+_TIME_RULES = {
+    "清晨": ("清晨使用，倾向清爽通透（柑橘/海洋/青草）",    -1),
+    "上午": ("上午使用，整体清新风格",                       -1),
+    "下午": ("下午使用，按问卷偏好",                          0),
+    "傍晚": ("傍晚使用，可加强浓郁度（木质/东方/美食）",     +1),
+    "夜间": ("夜间使用，推荐浓郁深邃风格",                   +1),
+}
+
 # sillage 等级列表，用于 +/- 偏移
 _SILLAGE_LEVELS = ["贴身", "近距离", "中等扩散", "强扩散"]
 
@@ -90,13 +99,24 @@ class Agent1Analyzer:
             agent_input.weather.temperature,
         )
 
-        # Step 1：计算生理影响（体温 + 活动强度），得到 sillage 偏移量
+        # Step 1：计算生理/场景影响（体温 + 活动 + 时段 + 心率），累加 sillage 偏移量
         temp_note, temp_offset    = self._calc_temp_influence(agent_input.watch_data.body_temperature)
         activity_note, act_offset = _ACTIVITY_RULES[agent_input.watch_data.activity_level]
-        sillage_offset = temp_offset + act_offset
+        time_note, time_offset    = _TIME_RULES.get(
+            agent_input.questionnaire.time_of_day, ("", 0)
+        )
+        hr_note, hr_offset        = self._calc_heart_rate_influence(
+            agent_input.watch_data.heart_rate
+        )
+        sillage_offset = temp_offset + act_offset + time_offset + hr_offset
+
+        logger.debug(
+            "[Agent1] sillage offsets | temp=%+d act=%+d time=%+d hr=%+d → total=%+d",
+            temp_offset, act_offset, time_offset, hr_offset, sillage_offset,
+        )
 
         # Step 2：调用 DeepSeek 进行语义分析
-        prompt   = self._build_prompt(agent_input, temp_note, activity_note)
+        prompt   = self._build_prompt(agent_input, temp_note, activity_note, time_note, hr_note)
         raw_json = self._call_llm(prompt)
 
         # Step 3：解析模型返回，构建 Agent1Output
@@ -109,6 +129,8 @@ class Agent1Analyzer:
         inp: Agent1Input,
         temp_note: str,
         activity_note: str,
+        time_note: str = "",
+        hr_note: str = "",
     ) -> str:
         q  = inp.questionnaire
         w  = inp.weather
@@ -138,7 +160,7 @@ class Agent1Analyzer:
 
 ### Apple Watch 生理数据
 - 体温：{wd.body_temperature}°C
-- 心率：{heart_rate_str}
+- 心率：{heart_rate_str}（{hr_note or "无偏移"}）
 - 活动强度：{wd.activity_level}
 
 ### 当前环境（GPS 定位天气）
@@ -147,6 +169,9 @@ class Agent1Analyzer:
 - 湿度：{w.humidity}%
 - 天气状况：{w.condition}
 - 季节：{w.season}
+
+### 使用时段上下文
+- {time_note or q.time_of_day}
 
 ## 分析规则
 
@@ -172,6 +197,21 @@ class Agent1Analyzer:
    - 如果用户描述中明确提到需求（如"清新"、"不要太浓"、"持久一点"），应优先满足
    - 用户描述与问卷冲突时，以用户描述为准
 
+6. **排斥香调（avoided_notes）是硬约束**
+   - 无论体温、活动强度、环境、场合如何，都**不得**将 avoided_notes 里的族群放入 scent_preference。
+   - 即使"高温高湿 → 柑橘调"这类推荐规则与 avoided 冲突，**优先遵守 avoided**。
+   - 用户自由描述里如果出现"不要 X / 避免 X / no X / 排斥 X / 不喜欢 X"的意思，请把 X 追加到输出的 avoided_notes 里。
+   - 如果用户同时把 X 既放进偏好又放进排斥（冲突），以 avoided 为准、从 scent_preference 中剔除 X。
+
+7. **季节影响**
+   - 春/秋：优先花香、柑橘、青草/绿叶家族
+   - 夏：优先柑橘、海洋/清新、青草/绿叶；浓度倾向下调一级（edp→edt 等）
+   - 冬：优先木质、东方/辛辣、美食调；浓度倾向上调一级
+
+8. **使用时段影响**
+   - 清晨/上午：清爽通透，扩散偏贴近
+   - 傍晚/夜间：浓郁深邃，扩散可外放
+
 ## 输出要求
 
 请综合以上所有信息，输出标准化的需求参数。
@@ -179,14 +219,14 @@ class Agent1Analyzer:
 **严格以如下 JSON 格式返回，不要包含任何其他文字：**
 
 {{
-  "occasion": "职场 | 约会 | 运动 | 日常 | 社交 | 正式",
-  "scent_preference": ["香调1", "香调2"],
+  "occasion": "日常 | 职场 | 约会 | 社交聚会 | 运动 | 居家 | 正式场合",
+  "scent_preference": ["花香 | 木质 | 柑橘 | 东方/辛辣 | 海洋/清新 | 美食调 | 麝香 | 青草/绿叶"],
   "longevity": "2小时以内 | 2-4小时 | 4-6小时 | 6小时以上",
   "sillage": "贴身 | 近距离 | 中等扩散 | 强扩散",
   "concentration": "淡香水 | 香水 | 浓香水 | 香精",
   "budget_level": "经济 | 中档 | 高档 | 奢华",
   "avoided_notes": ["排斥的香调"],
-  "time_of_day": "早晨 | 上午 | 下午 | 晚间 | 全天",
+  "time_of_day": "清晨 | 上午 | 下午 | 傍晚 | 夜间",
   "body_temperature": {wd.body_temperature},
   "heart_rate": {wd.heart_rate if wd.heart_rate else "null"},
   "activity_level": "静息 | 轻度活动 | 中度活动 | 剧烈运动",
@@ -250,6 +290,12 @@ class Agent1Analyzer:
         time_of_day  = llm_data.get("time_of_day",  q.time_of_day)
         season       = llm_data.get("season",        w.season)
         city         = llm_data.get("city",          w.city)
+
+        # ── avoided 硬约束：从 scent_pref 中剔除重合项 ────────
+        avoided_set = set(avoided or [])
+        scent_pref  = [f for f in scent_pref if f not in avoided_set]
+        if not scent_pref:
+            scent_pref = [f for f in q.scent_preference if f not in avoided_set]
 
         # ── sillage：LLM 结果 + 生理偏移 ───────────────────────
         raw_sillage      = llm_data.get("sillage", q.sillage)
@@ -318,6 +364,17 @@ class Agent1Analyzer:
         if humidity < 40:  return "干燥(<40%)"
         if humidity < 70:  return "适中(40-70%)"
         return "潮湿(>70%)"
+
+    @staticmethod
+    def _calc_heart_rate_influence(heart_rate: int | None) -> tuple[str, int]:
+        """心率偏高（>100 bpm）时降低扩散一级；偏低/正常/未检测无偏移。"""
+        if heart_rate is None:
+            return "心率未检测", 0
+        if heart_rate > 100:
+            return f"心率偏高（{heart_rate} bpm），建议贴身香调", -1
+        if heart_rate < 50:
+            return f"心率偏低（{heart_rate} bpm），按问卷处理", 0
+        return f"心率正常（{heart_rate} bpm）", 0
 
     @staticmethod
     def _calc_temp_influence(body_temp: float) -> tuple[str, int]:

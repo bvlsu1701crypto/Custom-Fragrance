@@ -142,18 +142,15 @@ class Agent1Input(BaseModel):
         default="",
         description="用户自由输入的文字描述，优先级最高，可为空",
     )
-    language: Literal["zh", "en"] = Field(
-        default="zh",
-        description="输出语言：zh=中文，en=英文",
-    )
     watch_data: AppleWatchData = Field(
         description="Apple Watch 采集的体温、位置、心率、活动强度"
     )
     questionnaire: QuestionnaireAnswers = Field(
         description="用户对 8 个指定问题的回答"
     )
-    weather: WeatherInfo = Field(
-        description="由系统根据 watch_data 经纬度联网获取的当前天气"
+    weather: Optional[WeatherInfo] = Field(
+        default=None,
+        description="当前天气。留空时由后端根据 watch_data 经纬度自动查询。"
     )
 
 
@@ -237,10 +234,22 @@ class Agent1Output(BaseModel):
 # Agent 2 输出层
 # ──────────────────────────────────────────────────────────────
 
+class SimilarPerfume(BaseModel):
+    """相似市售香水推荐"""
+
+    name: str = Field(description="香水名称（中文）")
+    name_en: Optional[str] = Field(default=None, description="English name")
+    brand: str = Field(description="品牌（中文）")
+    brand_en: Optional[str] = Field(default=None, description="English brand")
+    reason: str = Field(description="推荐理由（中文，50字以内）")
+    reason_en: Optional[str] = Field(default=None, description="English reason")
+
+
 class FormulaNote(BaseModel):
     """香调结构中单个成分"""
 
     name: str = Field(description="原料名称，如 佛手柑")
+    name_en: Optional[str] = Field(default=None, description="English consumer-friendly name")
     percentage: float = Field(
         gt=0,
         le=100,
@@ -269,17 +278,6 @@ class PerfumeFormula(BaseModel):
     )
 
 
-class SimilarPerfume(BaseModel):
-    """市售香水推荐"""
-
-    brand: str = Field(description="品牌名称，如 Chanel")
-    name: str = Field(description="香水全名，如 No.5 Eau de Parfum")
-    top_notes: str = Field(description="前调成分，逗号分隔")
-    middle_notes: str = Field(description="中调成分，逗号分隔")
-    base_notes: str = Field(description="后调成分，逗号分隔")
-    reason: str = Field(description="与用户配方相似的原因（30字以内）")
-
-
 class FinalOutput(BaseModel):
     """Agent2 的最终输出，直接返回给前端"""
 
@@ -303,7 +301,19 @@ class FinalOutput(BaseModel):
         le=40,
         description="香精浓度（%）：EDT≈10%，EDP≈15%，香精≈25%"
     )
-    similar_perfume: Optional[SimilarPerfume] = Field(
+    weather_snapshot: Optional[WeatherInfo] = Field(
         default=None,
-        description="最相似的一款市售香水推荐"
+        description="本次生成实际使用的天气快照，用于前端结果页展示。"
+    )
+    scent_description_en: Optional[str] = Field(
+        default=None,
+        description="English scent description"
+    )
+    selection_rationale_en: Optional[str] = Field(
+        default=None,
+        description="English selection rationale"
+    )
+    similar_perfumes: list[SimilarPerfume] = Field(
+        default_factory=list,
+        description="2-3款相似市售香水推荐"
     )

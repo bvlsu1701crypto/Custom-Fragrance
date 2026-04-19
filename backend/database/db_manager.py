@@ -14,9 +14,23 @@
   - database/data/history.xlsx
 """
 
+import math
 import os
 import pandas as pd
-from typing import Optional
+from typing import Any, Optional
+
+
+def _clean(value: Any) -> Any:
+    """把 pandas/numpy 的 NaN/NaT 清洗成 JSON 可序列化的 None。递归处理 dict/list。"""
+    if isinstance(value, dict):
+        return {k: _clean(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_clean(v) for v in value]
+    if isinstance(value, float) and math.isnan(value):
+        return None
+    if value is pd.NaT:
+        return None
+    return value
 
 
 class DatabaseManager:
@@ -101,7 +115,7 @@ class DatabaseManager:
         if self._base_details_df is not None and not self._base_details_df.empty:
             rows = self._base_details_df[self._base_details_df["base_id"] == base_row["id"]]
             details = rows.to_dict(orient="records")
-        return {**base_row, "details": details}
+        return _clean({**base_row, "details": details})
 
     def get_base_with_details(self, base_id: str) -> Optional[dict]:
         """获取单个香基的完整信息 + 配方明细"""
@@ -118,14 +132,14 @@ class DatabaseManager:
         self._ensure_loaded()
         if self._ingredients_df is None or self._ingredients_df.empty:
             return []
-        return self._ingredients_df.to_dict(orient="records")
+        return _clean(self._ingredients_df.to_dict(orient="records"))
 
     def get_all_bases(self) -> list[dict]:
         """获取全部香基概览（不含明细）"""
         self._ensure_loaded()
         if self._bases_df is None or self._bases_df.empty:
             return []
-        return self._bases_df.to_dict(orient="records")
+        return _clean(self._bases_df.to_dict(orient="records"))
 
     def save_generation_history(self, record: dict):
         """保存一次香水生成记录到 history.xlsx"""

@@ -21,6 +21,9 @@ from agents.agent2_executor import Agent2Executor
 from config.settings import settings
 from database.db_manager import DatabaseManager
 from database.schemas import Agent1Input, FinalOutput
+from services.weather_api import WeatherAPIService
+
+_weather_service = WeatherAPIService()
 
 logger = logging.getLogger(__name__)
 
@@ -35,8 +38,8 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
+    allow_origins=settings.ALLOWED_ORIGINS,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -77,19 +80,28 @@ async def generate_perfume(request: Agent1Input):
       3. 返回 FinalOutput（配方 + 描述 + 规格参数）
     """
     try:
+        # Step 0：若前端未提供 weather，后端按经纬度自动查询（Open-Meteo）
+        if request.weather is None:
+            fetched = _weather_service.get_weather_by_coords(
+                request.watch_data.latitude,
+                request.watch_data.longitude,
+            ) or _weather_service.get_fallback_weather()
+            request = request.model_copy(update={"weather": fetched})
+
         logger.info(
             "[API] 收到生成请求 | 场合=%s 城市=%s",
             request.questionnaire.occasion,
-            request.weather.city,
+            request.weather.city or "(未知)",
         )
 
         analyzer = Agent1Analyzer()
         analysis = analyzer.analyze(request)
 
         executor = Agent2Executor()
-        result   = executor.execute(analysis, language=request.language)
+        result   = executor.execute(analysis)
 
-        return result
+        # 把本次使用的 weather 盖章到响应，供前端展示
+        return result.model_copy(update={"weather_snapshot": request.weather})
 
     except HTTPException:
         raise
